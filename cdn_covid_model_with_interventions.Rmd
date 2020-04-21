@@ -1,0 +1,122 @@
+---
+title: "COVID-2019 Transmisson Model"
+author: 'Ashleigh Tuite, Amy Greer, and David Fisman'
+date: '`r format(Sys.Date(), "%d-%b-%Y")`'
+output:
+  pdf_document: 
+    fig_caption: yes
+    includes:
+      in_header: header.tex
+  html_document:
+    keep_md: yes
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+  knitr::opts_chunk$set(echo = TRUE)
+  
+  library(tidyverse)
+  library(deSolve)
+  library(here)
+  library(readr)
+  library(socialmixr)
+  library(readxl)
+  library(cowplot)
+  library(patchwork)
+  library(knitr)
+  library(kableExtra)
+  library(e1071) 
+  library(openxlsx)
+  library(data.table)
+  library(DiagrammeR)
+
+geo <- "Ontario"  # one of: Alberta, British Columbia, Manitoba, Newfoundland and Labrador, Nova Scotia, Northwest Territories #Nunavut, Ontario, Prince Edward Island, Quebec, Saskatchewan, Yukon, Canada     
+geo.abb <- "ON"  # one of: BC    AB    SK    MB    ON    QC    NB    NS   PEI    NF    YK   NWT    NU Canada
+
+  source(here("code", "functions.R"))
+  source(here("code", "setup.R"))
+  source(here("code", "model_schematic.R"))
+  source(here("code", "model_setup.R"))
+  source(here("code", "mixing.R"))
+  source(here("code", "model.R"))
+  source(here("code", "plot_functions.R"))
+  source(here("code", "model_analysis.R"))
+
+```
+#### Overview
+
+We have developed an age-structured model that describes COVID-19 transmission in the Ontario population. Model compartments and movements between compartments are summarized in the model schematic:
+
+```{r, echo=FALSE}
+model.schematic
+```
+
+
+The model is stratified by age (5-year age groups) and health status (+/- comorbidities) and uses 2019 Canadian provincial/territorial population estimates (from [Stats Canada](https://www150.statcan.gc.ca/t1/tbl1/en/tv.action?pid=1710000501)). Contacts within and between age groups are based on the [Mossong et al.](https://journals.plos.org/plosmedicine/article?id=10.1371/journal.pmed.0050074) mixing matrix for the United Kingdom. Comorbidity estimates by age were obtained from the Canadian Community Health Survey (2016) and included the following conditions: hypertension, heart disease, asthma, COPD, stroke, diabetes, and cancer. Note that for the provincial age-specific comorbidity estimates, COPD is excluded due to issues with the data. 
+
+The model can be used to estimate age-specific incidence/prevalence, hospitalizations, ICU use, and deaths. It can also be used to investigate possible interventions, such as social distancing and quarantine. 
+
+
+```{r, include = FALSE, warning=FALSE}
+
+init.infect <- 750 #initial infections
+threshold <- 200 # number of cases in ICU used to determine intervention switching for dynamic scenarios
+interv.fixed <- FALSE # if true, running fixed duration interventions, if false, running dynamic interventions
+n.replicates <- 50
+interv.delay <- 0 # delay to start fixed intervention in WEEKS)
+interv.duration.fixed <- 26 # duration of intervention (in WEEKS)
+interv.duration.dynamic <- 7*4 # assume 4 week period before re-evaluating dynamic interventions
+interv.duration <- if(interv.fixed==TRUE) interv.duration.fixed else interv.duration.dynamic
+interv.status <- if(interv.fixed==TRUE) intervSetup(interv.delay, interv.duration, model.dur) else 0
+x <-  plotFitModel(n.replicates)
+
+```
+To capture variability in transmission (that is, the idea that some cases may transmit to many others (superspreader events), while others transmit less), we have added volatility to the R0 term. This works by effectively treating the transmission term as a random walk and allows us to run the model multiple times and generate uncertainty bounds around the model projections. In the figures below, the darker and lighter bands represent 50% and 95% uncertainty bounds, respectively, around our estimates based on `r n.replicates` replicates.
+
+### Outputs: comparison of base case to different enhanced control scenarios
+
+* The outputs include:
+  + New cases (incidence of infection)
+  + Number in quarantine/isolation on any given day (prevalence)
+  + Number of mild cases seeking care (daily incidence, these would represent mild cases that might need assessment/testing in outpatient settings)
+  + New hospitalizations (incidence)
+  + Cases in hospital on any given day (prevalence)
+  + Cases in ICU on any given day (prevalence)
+  + Cumulative deaths over the course of the epidemic
+
+
+* Attack rates represent ALL cases, regardless of severity or symptom status. Even in the absence of intervention, observed attack rates are likely to be much lower than this, due to asymptomatic and/or mildly symptomatic infections. 
+
+
+
+```{r, warning = FALSE, echo=FALSE, fig.cap="Model outcomes"}
+x[["incPlot"]]
+```
+
+```{r, warning = FALSE, echo=FALSE, fig.cap="Model outcomes"}
+x[["hospPlot"]]
+```
+
+```{r, warning = FALSE, echo=FALSE, fig.cap="Model outcomes"}
+x[["icuPlot"]]
+```
+
+```{r, warning = FALSE, echo=FALSE, fig.cap="Model outcomes"}
+x[["deathPlot"]]
+```
+
+```{r, echo=FALSE}
+# 
+x[["AR"]] %>%
+  filter(measure=="Incident infections (all severities)") %>%
+  mutate("95% credible interval" = paste("(",AttackRate_LCI, "-", AttackRate_UCI, ")", sep="")) %>%
+  select(Intervention = intervention_number, 
+         "Intervention Name" = intervention_name, 
+         "Attack rate (%)" = AttackRate_median,
+         "95% credible interval"
+         ) %>%
+knitr::kable( caption = "Final overall attack rates for different scenarios", format="latex", booktabs=TRUE) %>%
+kable_styling(latex_options = "scale_down")
+
+```
+
