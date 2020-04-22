@@ -59,10 +59,10 @@ The model can be used to estimate age-specific incidence/prevalence, hospitaliza
 
 ```{r, include = FALSE, warning=FALSE}
 
+n.replicates <- 20  #number of replicates per intervention 
 init.infect <- 750 #initial infections
 threshold <- 200 # number of cases in ICU used to determine intervention switching for dynamic scenarios
 interv.fixed <- FALSE # if true, running fixed duration interventions, if false, running dynamic interventions
-n.replicates <- 50
 interv.delay <- 0 # delay to start fixed intervention in WEEKS)
 interv.duration.fixed <- 26 # duration of intervention (in WEEKS)
 interv.duration.dynamic <- 7*4 # assume 4 week period before re-evaluating dynamic interventions
