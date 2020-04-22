@@ -1,5 +1,5 @@
-<HEAD>
-  <LINK REL="stylesheet" TYPE="text/css" HREF="mvp.css"></LINK>
+i<HEAD>
+  <LINK REL="stylesheet" TYPE="text/css" HREF="web/mvp.css"></LINK>
   <STYLE>
       #mainDIV { width:1000px; height:600px; position:relative }
       
@@ -15,7 +15,7 @@
       #bars > rect       {fill:red}
       #bars > rect:hover {fill:blue !important;}
   </STYLE>
-  <SCRIPT SRC="ganja.js"></SCRIPT>
+  <SCRIPT SRC="web/ganja.js"></SCRIPT>
 </HEAD>
 
 <BODY>
@@ -421,10 +421,10 @@
   
   
   // Fetch all scenarios.
-    fetch("scenarios.json")
+    fetch("web/scenarios.json")
     .then(response=>response.json())
     .then(data=>{
-      Promise.all(data.map(scenario=>fetch("params_"+scenario.replace(" ","_")+".json").then(response=>response.json())))
+      Promise.all(data.map(scenario=>fetch("web/params_"+scenario.replace(" ","_")+".json").then(response=>response.json())))
       .then(scenarios=>{
         data.forEach(name=>document.getElementById("scenario").innerHTML+='<OPTION>'+name)
         // Upgrade scenarios with data the js version needs.
