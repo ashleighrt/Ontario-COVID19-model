@@ -74,6 +74,9 @@ simulateModelReps <- function(n, interv) {
   x[,sd.seq] <- x[sd.seq,]
   params[["rr.contact.interv"]] <- x
 
+  ## Output parameters as JSON for the web version.
+  jsonlite::write_json(list(y=yinit,params=params,name=params.interv.names$value[interv]),paste("web/params_",str_replace(params.interv.names$value[interv]," ","_"),".json",sep=""),pretty=TRUE,digits=20)
+
   rep <- as.list(1:n)
   names(rep) <- rep
   if (n > 1) {
@@ -89,6 +92,9 @@ simulateModelReps <- function(n, interv) {
 }
 
 intervRuns <- function(n){
+  ## Output a list of scenario's (the webpage picks this up)
+  jsonlite::write_json(params.interv.names$value,"web/scenarios.json",pretty=TRUE)  
+
   interv.rep <- as.list(1:n.interv)
   names(interv.rep) <- params.interv.names$intervention
   interv.rep <- plyr::ldply(interv.rep, function(x) {

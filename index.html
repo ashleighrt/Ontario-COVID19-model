@@ -1,0 +1,470 @@
+i<HEAD>
+  <LINK REL="stylesheet" TYPE="text/css" HREF="web/mvp.css"></LINK>
+  <STYLE>
+      #mainDIV { width:1000px; height:600px; position:relative }
+      
+      /* Legend */
+      #hover        { position:absolute; left:25px; top:10px; font-size:120%; line-height:140%; pointer-events:none; }
+      .summary      { font-size:80%; display:inline; }
+      .title        { display:inline-block; text-transform:capitalize; min-width:110px; }
+      .title_sel    { display:inline-block; text-transform:capitalize; min-width:110px; color:red }
+      .summary span { display:inline-block; min-width:70px; }
+
+      /* Graph */
+      svg           { background-color:#FFF; fill-opacity:0.5; border:1px solid rgba(0,0,0,0.5); }
+      #bars > rect       {fill:red}
+      #bars > rect:hover {fill:blue !important;}
+  </STYLE>
+  <SCRIPT SRC="web/ganja.js"></SCRIPT>
+</HEAD>
+
+<BODY>
+  <main id="main">
+  <header><H1>Ontario COVID-19 transmission model</H1></header>
+  <section>
+    <p><a target="blank" href="https://www.medrxiv.org/content/10.1101/2020.03.24.20042705v1">Mathematical modeling of COVID-19 transmission and mitigation strategies in the population of Ontario, Canada</a></p>
+    <p style="text-align:center">A model by
+      <A target="blank" href="https://twitter.com/AshTuite">Ashleigh Tuite</A>,
+      <A target="blank" href="https://twitter.com/AmyGreerKalisz">Amy Greer</A> and
+      <A target="blank" href="https://twitter.com/DFisman">David Fisman</A>.<BR>
+      <A target="blank" href="https://github.com/ashleighrt/Ontario-COVID19-model">R version</A> by <A target="blank" href="https://twitter.com/AshTuite">Ashleigh Tuite</A>,
+      Web version by <A target="blank" href="https://twitter.com/enkimute">Steven De Keninck</A>.
+    </p>
+  </section>
+  <!--section>
+    <blockquote>
+        "All models are wrong, but some are useful"
+        <footer><i>- George Box</i></footer>
+    </blockquote>
+  </section-->
+  <section>
+    <select id="scenario">
+  </section>
+  <section>
+    </select>
+      <DIV ID="mainDIV">
+        <svg viewbox="0 0 1000 600" width=100% height=100% preserveAspectRatio=none>
+          <g id="lines"></g>
+          <g id="bars"></g>
+        </svg>
+        <div id="hover"></div>
+        <div id="deriv"></div>
+      </DIV>
+  </section>
+  <SCRIPT>
+  // Solver.
+    var API = {
+      calc : function (params) {
+      
+        /** Some helpers for component wise multiplication - mimicking the R behavior. *******/
+        self.cmul  = (a,b)=>a.map((a,i)=>a*b[i]);
+        self.ccmul = (a,b)=>a.map((row,ri)=>row.map((col,ci)=>col * b[ri][ci]));
+        self.cadd  = (...args)=>args[0].map((x,i)=>{
+          for (var j=1; j<args.length; j++) x += args[j][i]; 
+          return x;
+        });
+        self.cmadd = (s, state, d)=>state.map( (r,ri)=>r.map( (c,ci)=> c + s * d[ri][ci]  )  );
+        self.sum   = a=>a.reduce((s,x)=>s+x,0);
+        
+        /** RK4 Integrator *******************************************************************/
+        self.cmix = (state, d1,d2,d3,d4, h)=>state.map((r,ri)=>r.map((c,ci)=> c + h/6 * (d1[ri][ci] + 2*(d2[ri][ci] + d3[ri][ci]) + d4[ri][ci] )));
+        self.RK4  = (dState, state, t, h, ...params)=>{
+            var V1 = dState(t,state,...params), 
+                V2 = dState(t+0.5*h,cmadd(0.5*h,state,V1),...params), 
+                V3 = dState(t+0.5*h,cmadd(0.5*h,state,V2),...params), 
+                V4 = dState(t+h,cmadd(h,state,V3),...params);
+            return cmix(state,V1,V2,V3,V4,h);    
+         }
+
+        /** Model setup and gradient *********************************************************/ 
+        return Algebra().inline((params)=>{
+         // Integrators
+         var Euler = (dState, state, t, h, ...params)=>state + h*dState(t,state,...params);
+         
+         // Creates a single compartment. (stratified in 16 age groups and healthy/comorbidities)
+         var compartiment = (x,y=0)=>[...Array(x)].map((x,i)=>(y instanceof Array)?y[i]||0:y);
+         
+         // Our initial state.     
+         var state; 
+         function initState() { state = [
+               compartiment(32,params.population||[650332,682299,703567,748657,888276,936968,877531,800775,736630,671913,691037,665423,477320,346498,242304,363103,77923,81754,84302,112859,147011,113444,132286,165178,178438,269142,300408,402671,460441,432149,402121,723787]), // s    susceptible.
+               compartiment(32),      // v    vaccinated (susceptible)
+               compartiment(32),      // e    exposed
+               compartiment(32),      // q    exposed - quarantined
+               compartiment(32),      // a    infectious, pre-symptomatic
+               compartiment(32),      // w    infectious, pre-symptomatic, in isolation
+               compartiment(32,params.mild),      // b    infectious - mild
+               compartiment(32,params.severe),    // c    infectious -severe
+               compartiment(32),      // y    infectious - mild, in isolation
+               compartiment(32),      // z    infectious - severe, in isolation
+               compartiment(32),      // g    isolated - mild, not previously isolated 
+               compartiment(32),      // h    hospitalized
+               compartiment(32),      // icua pre-ICU
+               compartiment(32),      // icub ICU
+               compartiment(32),      // icuc post-ICU
+               //compartiment(32),      // m    LTC
+               compartiment(32),      // r    recovered 
+               compartiment(32),      // d    dead
+               compartiment(32),      // inc  cumulative incidence
+               compartiment(32),      // k    cumulative number of mild cases detected and isolated (currently only among those not already quarantined)
+               compartiment(32),      // j    cumulative incidence of hospitalization   
+             ];
+             if (interv) {
+               interv.on = false;
+               interv.duration = params["interv.duration"];
+             }  
+         };
+
+         // Aging and Births (from R)
+         var aging = [
+              [-0.000547945205479452, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0.000547945205479452, -0.000522272935135275, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0.000522272935135275, -0.000506485240737361, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0.000506485240737361, -0.00047598072464408, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0.00047598072464408, -0.00040116619313126, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0.00040116619313126, -0.0003803185395551, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0.0003803185395551, -0.000406078305347461, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0.000406078305347461, -0.000445001781236756, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0.000445001781236756, -0.000483752089067596, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0.000483752089067596, -0.000530345895033826, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000530345895033826, -0.000515668916960833, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000515668916960833, -0.00053551846174518, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.00053551846174518, -0.000746556401093319, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000746556401093319, -0.00102842239022985, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.00102842239022985, -0.00147065793948867, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.00147065793948867, -0.000981391785168019, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -0.000547945205479452, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000547945205479452, -0.0005222684424808, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0005222684424808, -0.000506483051962888, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000506483051962888, -0.000378326356308095, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000378326356308095, -0.000290437683211293, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000290437683211293, -0.000376375429697254, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000376375429697254, -0.000322766840380504, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000322766840380504, -0.000258494074553363, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000258494074553363, -0.000239284985522004, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000239284985522004, -0.000158643148399638, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000158643148399638, -0.000142131814887005, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000142131814887005, -0.000106035781684242, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000106035781684242, -9.27318250255198E-05, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9.27318250255198E-05, -9.88028070100251E-05, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9.88028070100251E-05, -0.000106180811861543, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000106180811861543, -5.89918501528424E-05]
+            ]
+            
+          // faster aging.
+          function doAging(test) {    
+              var test2 = [];
+              for (var jj=0;jj<32;jj+=16) for (var iii=jj;iii<jj+16;iii++) {
+                test2[iii] = test[iii]*(aging[iii][iii]);
+                if (iii!=jj) test2[iii] += test[iii-1]*(aging[iii][iii-1]);
+              }  
+              return test2;
+          }      
+          
+          // Births matrix - exported from R.
+          var births = [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000981391785168019, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5.89918501528424E-05],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ]
+
+         // Intervention state is stored globally.
+         self.interv = {on:false,duration:0};
+             
+         // Our model function.
+         var dState = (t,[s,v,e,q,a,w,b,c,y,z,g,h,icua,icub,icuc,/*m,*/r,d,inc,k,j],params)=>{
+           // Intervention - automatic (if minimum ICU cases reached), or fixed.
+             if (params["interv.fixed"]!==true) {
+             
+                // Turn off the automatic intervention. 
+                if (interv.start && t>(interv.start+interv.duration)) {
+                    interv.on = false;
+                    interv.start = undefined;
+                }
+                
+                // Turn on the automatic intervention if the threshold is breached.
+                if (interv.start===undefined && sum(icub) >= params.threshold) { 
+                    interv.on = true; 
+                    interv.start = t;
+                }
+                
+             } else {
+                interv.on = params["interv.on"][Math.round(t)+1]; 
+             }
+
+           // Derived parameters.  
+             var time_to_detect = interv.on?params["time.to.detect.interv"]:params["time.to.detect"],
+                 rr_i     = interv.on?params["rr.isolate.interv"]:params["rr.isolate"],
+                 delta_s  = interv.on?params["p.quarantine.s.interv"]:params["p.quarantine.s"],
+                 delta_e  = interv.on?params["p.quarantine.e.interv"]:params["p.quarantine.e"],
+                 theta    = interv.on?ccmul(params.cm,params["rr.contact.interv"])/* *params["interv.strength"]*/:params.cm*params["rr.contact"],
+                 rho      = 1/params["quarantine.dur"],
+                 epsilon  = 1/params["latent.period"],
+                 gamma_p  = 1/params["inf.period.presymp"],
+                 gamma_s  = 1/params["inf.period.severe"],
+                 gamma_m  = 1/params["inf.period.mild"],
+                 gamma_d  = time_to_detect.map(x=>1/x),                                                              // rate of entry to isolated compartment
+                 gamma_i  = time_to_detect.map(x=>x<params["inf.period.mild"]?1/(params["inf.period.mild"]-x):1),    // rate of exit from isolated (and infectious) compartment
+                 sigma_s  = params["p.severe"],
+                 sigma_i  = params["p.icu"],
+                 psi      = 1/params["hosp.dur"],
+                 //p_ltc    = params["p.ltc"],
+                 pi_a     = 1/params["icu.a.dur"],
+                 pi_b     = 1/params["icu.b.dur"],
+                 pi_c     = 1/params["icu.c.dur"],
+                 //pi_d     = 1/params["ltc.dur"],
+                 cfr_icu  = params["cfr.icu"];
+                 //omega    = params.rw,                    // Random walks for confidence intervals. Not used in JS version.
+                 //omega_p  = omega[Math.floor(t)][1],
+                 //omega_m  = omega[Math.floor(t)][2],
+                 //omega_s  = omega[Math.floor(t)][3];
+
+           // Calculation of beta.
+             var eig  = 11.6366531220309; // from R.
+             var beta = params["R0"] * (1/(params["inf.period.presymp"] + 
+                        params["inf.period.mild"] * (1 - params["p.severe"].reduce((s,a)=>s+a,0)/params["p.severe"].length) +
+                        params["inf.period.severe"] * (params["p.severe"].reduce((s,a)=>s+a,0)/params["p.severe"].length))) / eig;
+    
+           // calculate force of infection
+             var lh = beta * cadd(cadd(a,rr_i*w),cadd(b,rr_i*cadd(g,y)),cadd(c,rr_i*z));
+             var denom = cadd(s,v,e,q,a,w,b,c,y,z,g,h,icua,icub,icuc,/*m,*/r); 
+             lh = lh.map((x,i)=>x/denom[i]); 
+
+             var sweep = theta.map((row,i)=>row.map((el,j)=>el*lh[j]));
+             var lambda = sweep.map(row=>row.reduce((s,x)=>s+x,0))
+            
+             var ls = -lambda.map((x,i)=>x*s[i]);
+             
+           // The derivatives for each of the compartments   
+             var dsdt = cadd(ls,-delta_s*s,rho*v,doAging(s),births*cadd(s,v,e,q,a,w,b,c,y,z,g,h,icua,icub,icuc,/*m,*/r));
+             var dvdt = cadd(delta_s*s, - rho*v , doAging(v));      
+             
+             var dls = ls.map(x=>(1-delta_e)*-x); 
+             var dedt = cadd(dls, -epsilon*e, doAging(e));
+             var dqdt = cadd(ls.map(x=>delta_e*-x),-epsilon*q,doAging(q));
+             var dadt = cadd(epsilon*e, -gamma_p*a, doAging(a)); 
+             var dwdt = cadd(epsilon*q, -gamma_p*w, doAging(w));
+
+             var sga = a.map((x,i)=> (1-sigma_s[i])*gamma_p*x  );
+             var dbdt = cadd(sga, -gamma_m*b, -cmul(gamma_d,b), doAging(b));
+             
+             var dcdt = cadd(cmul(sigma_s,a)*gamma_p, - gamma_s*c,  doAging(c)); 
+             var dydt = cadd(cmul(sigma_s.map(x=>1-x),w)*gamma_p, - gamma_m*y,  doAging(y));
+             var dzdt = cadd(cmul(sigma_s,w)*gamma_p, -gamma_s*z, doAging(z));  
+             
+             var dgdt = cadd(cmul(gamma_d,b), - cmul(gamma_i,g), doAging(g)); 
+//             var dhdt = cadd(cmul(1-p_ltc,cmul((1-sigma_i),cadd(c,z)))*gamma_s, - psi*h, doAging(h));
+             var dhdt = cadd(cmul((1-sigma_i),cadd(c,z))*gamma_s, - psi*h, doAging(h));
+
+//             var dicuadt = cadd(cmul(1-p_ltc,cmul(sigma_i,cadd(c,z)))*gamma_s, -pi_a*icua, doAging(icua));  
+             var dicuadt = cadd(cmul(sigma_i,cadd(c,z))*gamma_s, -pi_a*icua, doAging(icua));  
+             var dicubdt = cadd(pi_a*icua, - pi_b*icub, doAging(icub));  
+             var dicucdt = cadd(cmul((1-cfr_icu)*pi_b,icub), - pi_c*icuc,  doAging(icuc));  
+//             var dmdt    = cadd(gamma_s*cmul(p_ltc,cadd(c,z)), -pi_d*m, doAging(m)); 
+             var drdt    = cadd(cmul(gamma_i,g), gamma_m*cadd(b,y), psi*h, cmul(cfr_icu*pi_b,icub), pi_c*icuc, /* pi_d*m,*/ doAging(r));  
+
+//             var dddt   = cadd(cmul(cfr_icu,pi_b*icub),cmul(sigma_i,cmul(cfr_icu,pi_d*m))); //to keep deaths as absorbing state and pop size constant, moving all hosp back to recovered/removed state 
+             var dddt   = cmul(cfr_icu,pi_b*icub); //to keep deaths as absorbing state and pop size constant, moving all hosp back to recovered/removed state 
+             var dincdt = cmul(lambda,s); 
+             var dkdt   = cmul(gamma_d,b);
+             var djdt   = gamma_s*cadd(c,z); 
+             
+           // Return the delta state
+             return [dsdt,dvdt,dedt,dqdt,dadt,dwdt,dbdt,dcdt,dydt,dzdt,dgdt,dhdt,dicuadt,dicubdt,dicucdt,/*dmdt,*/drdt,dddt,dincdt,dkdt,djdt]
+         }     
+         
+         // Integration parameters.
+         var days = params.days, steps = params.steps||2, results = [];
+
+         // Run the model.
+         initState();
+         for (var ii=0; ii<days; ++ii) {
+           // Store the current state.
+           console.log(interv);
+           results[ii]=[...state.map(row=>(row.reduce((s,a)=>s+a,0))),interv.on?1:0];
+
+           // Update the state
+           for (var j=0; j<steps; j++) state = ((params.integrator==1)?RK4:Euler)(dState,state,ii,1/steps,params);
+
+           // Report progress to main thread.
+           if (ii%10) postMessage({progress:ii/(days-1),data:results});
+         }  
+         return results;
+       })(params);    
+
+      }
+    }
+
+    // Names, colors, age names.
+    self.names = ['susceptible','vaccinated','exposed','exposed - quarantined','infectious, pre-symptomatic',
+                    'infectious, pre-symptomatic, isolated','infectious - mild','infectious - severe',
+                    'infectious - mild, isolated','infectious - severe, isolated',
+                    'isolated - mild, not previously isolated','hospitalized','pre-ICU','ICU',
+                    'post-ICU',/*'ltc',*/'recovered','fatalities',
+                    'cumulative incidence','cumulative mild+isolated','cumulative hospitalisation','interventionstate'];
+    self.colors = ['#FFAAAA','green','coral','orange','purple','gold','orange','olive','aqua','navy','magenta','blueviolet','aquamarine','darkturquoise','teal','brown','#666','deeppink'];
+    self.ages   = [...[...Array(15)].map((x,i)=>(i*5)+'-'+((i+1)*5-1)),'75+'];
+    
+    // Default selection graph and data.
+    self.checks = [false, false, !true, false, false, false, false, false, false, false, false, !true, !true, true, !true, false, /*false,*/ true, false, false, false, false];
+    self.checks = [false, false, true, false, true, false, true, true, false, false, false, true, true, true, true, false, /*false,*/ true, false, false, false, false];
+    self.datachecks = [false, false, false, false, false, false, false, false, false, false, false, true, false, true, false, false, /*false,*/ true, false, false, false, false];
+
+  // Rendering the graph.
+    // SVG Graph mouse over handler. Displays current cumulative and day values.
+    document.querySelector('svg').onmousemove = document.querySelector('svg').onmouseleave = function(e){ 
+      // Check if we're over a bar.
+       var ids, text = document.querySelector('#hover');
+       if (e.target && e.target.getAttribute("data-id")) ids = JSON.parse(e.target.getAttribute("data-id"));
+
+      // Update the header.  
+       if (ids) {
+         var cats = ``;
+         checks.forEach((c,i)=>{
+           if (!c) return;
+           cats += `<DIV CLASS="summary">
+                      <SPAN>&sum; ${results[ids[0]][i]|0}</SPAN>
+                      <SPAN>&Delta; ${results[ids[0]][i]-results[ids[0]-1][i]|0}</SPAN>
+                    </DIV>
+                    <B CLASS="${i==ids[1]?'title_sel':'title'}">${names[i]}</B><BR>`;
+         });  
+         text.innerHTML = `Day ${ids[0]} ${results[ids[0]][20]?'[intervention active]':''}<BR>${cats}`
+       } else text.innerHTML = ``; 
+     }
+     
+    // Update the SVG graph 
+    self.updateGraph = function(results,params) {
+
+      if (!results) return;
+      var days = params.days, svg = document.querySelector('svg'), res ='', max=0, width = 1000/days;
+
+       // First figure out the maximum
+       for (var ii=0; ii<days; ++ii) {
+          for (var h=0, j=checks.length-1; j>=0; --j) if (checks[j]) h+= results[ii][j];
+          max = Math.max(max,h*1.1);
+       }
+
+       // The number of horizontal lines we want.
+       var step = 1, m = max, lines='', scale=600/max;
+       while (m>20) { step*=10; m/=10; };
+       while (Math.floor(max/step)+1 < 5) step /= 2;
+       while (Math.floor(max/step)+1 > 8) step *= 2;
+
+       // rerender the lines and counts.
+       for (var i=0; i<Math.floor(max/step)+1; i++)
+         lines += `<line x1=0 x2=1000 y1=${600-i*step*scale} y2=${600-i*step*scale} stroke="rgba(0,0,0,0.1)"/><text x="990" y="${590-i*step*scale}" text-anchor="end">${max>5000?Math.floor(i*(step/1000))+'k':i*step}</text>`;
+       svg.getElementById('lines').innerHTML = lines;
+
+       // render the actual data
+
+
+       // Now render the intervention state.
+       if (params["interv.strength"]<1 || params["interv.fixed"]) {
+         for (var ii=0; ii<results.length; ++ii) {
+           var h2 = results[ii][20];
+           res += `<rect style="pointer-events:none; fill:#CCFFCC;" x="${ii*width}" y="0" width="${width}" height="${h2?600:0}"/>`;
+         }
+       } else {
+         // reset iv state for hover.
+         for (var ii=0; ii<results.length; ++ii) results[ii][20] = 0;
+       
+       }  
+
+
+       // Now render the bars
+       for (var ii=0; ii<results.length; ++ii) {
+          var h = 0, k = 0;
+          for (var j = checks.length-1; j>=0; --j) {
+            if (checks[j]) {
+              var h2 = (results[ii][j]/max)*600;
+              res += `<rect data-id="[${ii},${j}]" style="fill:${colors[j%colors.length]};" x="${ii*width}" y="${600-h-h2}" width="${width}" height="${h2}"/>`;
+              if (ii >= params.data_start && ii<params.data_start + params.data.length && datachecks[j]) {
+                var h3 = (params.data[ii-params.data_start][j]/max)*600;
+                res += `<rect style="pointer-events:none; stroke:${colors[j%colors.length]}; fill:rgba(0,0,0,0.5)" x="${ii*width}" y="${600-h-h3}" width="${width}" height="${h3}"/>`;
+              }  
+              h += h2; ++k;
+            }
+          }  
+       }
+
+       svg.getElementById('bars').innerHTML = res;
+    }
+  
+  
+  // Fetch all scenarios.
+    fetch("web/scenarios.json")
+    .then(response=>response.json())
+    .then(data=>{
+      Promise.all(data.map(scenario=>fetch("web/params_"+scenario.replace(" ","_")+".json").then(response=>response.json())))
+      .then(scenarios=>{
+        data.forEach(name=>document.getElementById("scenario").innerHTML+='<OPTION>'+name)
+        // Upgrade scenarios with data the js version needs.
+        scenarios.forEach(scenario=>{
+          var params = scenario.params;
+          for (var i in params) if (params[i] instanceof Array && params[i].length==1) params[i] = params[i][0];
+          Object.assign(params,{
+            // Population and distribution of initial infection.
+              "population" : scenario.y.slice(0,32),
+              "mild" : scenario.y.slice(32*6,32*7),
+              "severe" : scenario.y.slice(32*7,32*8),
+            // Actual data 
+              "data":[], 
+              "data_start":14,
+
+            // The R code provides a list of booleans per day, convert back to start/duration
+              "interv.start":params["interv.on"]?params["interv.on"].indexOf(1):21,
+              "interv.duration":params["interv.on"]?params["interv.on"].filter(x=>x==1).length:8,
+              "interv.strength" :params["rr.contact.interv"][0][0]<1 || params["time.to.detect.interv"][0] != params["time.to.detect"][0] ? 0.5:1.0 , 
+            
+            // Simulation params.  
+              "days"       : 250,
+              "steps"      : 1,
+              "integrator" : 1
+          });
+          scenario.params=params;
+        });
+          console.log(scenarios[0]);
+        
+        document.getElementById("scenario").onchange = function(e) { recalc(scenarios[this.selectedIndex]) }
+        
+        function recalc(scenario) {
+          var res = API.calc(scenario.params);
+          self.results=res;
+          updateGraph(res,scenario.params);
+        }
+        recalc(scenarios[0]);  
+        
+      });
+    })
+  </SCRIPT>
+  
+</BODY>
