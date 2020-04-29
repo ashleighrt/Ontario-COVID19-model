@@ -1,0 +1,679 @@
+<HEAD>
+  <LINK REL="stylesheet" TYPE="text/css" HREF="web/mvp.css"></LINK>
+  <TITLE>COVID-19 Exit Strategy</TITLE>
+  <STYLE>
+      #mainDIV { width:1000px; height:600px; position:relative }
+      
+      /* Legend */
+      #hover        { position:absolute; left:25px; top:10px; font-size:120%; line-height:100%; pointer-events:none; font-size:80%; z-index:100; }
+      #hover > input { height:15px; margin:2px; pointer-events:all }
+      #hover > label { pointer-events:all; height:20px; margin:2px; user-select:none;  }
+      .summary      { font-size:80%; display:inline; }
+      .title        { display:inline-block; text-transform:capitalize; min-width:110px; }
+      .title_sel    { display:inline-block; text-transform:capitalize; min-width:110px; color:red }
+      .summary span { display:inline-block; min-width:70px; }
+      
+      section { background-color:rgba(255,255,255,0.75);  }
+      section p { padding:5px; text-align:center; }
+      .intervention { margin-top : 35vh; margin-bottom: 75vh; max-width:40%; position:relative; left:50%;  border:2px solid rgba(0,0,0,0.25); z-index:1; flex-direction:column; align-items:center; }
+      .intervention article { display:flex; flex-direction:column; align-items:center; }
+      select { display:inline; }
+      .refs         { border:2px solid rgba(0,0,0,0.25); z-index:5; position:relative; }
+
+      /* Graph */
+      .sticky            { position:sticky; top:0; }
+      svg                { background-color:#FFF; fill-opacity:0.5; background:#EEE; width:100% }
+      #bars > rect       {fill:red}
+      #bars > rect:hover {fill:blue !important;}
+  </STYLE>
+  <SCRIPT SRC="web/ganja.js"></SCRIPT>
+</HEAD>
+
+<BODY>
+  <main id="main">
+  <header><H1>Design your own COVID-19 exit strategy.</H1></header>
+  <section>By &nbsp; <A HREF="">Ashleigh Tuite</A> &nbsp; and &nbsp;<A HREF="">Steven De Keninck</A> &nbsp;  </section> 
+  <section>
+    <blockquote>
+        "All models are wrong, but some are useful"
+        <footer><i>- George Box</i></footer>
+    </blockquote>
+  </section>
+
+   <article>
+     <H2>Introduction</H2>
+     <article>
+     <UL>
+     <LI>In response to COVID-19, the Canadian province of Ontario declared a state of emergency on March 17, 2020.
+     <LI>The order is currently in place until May 12th and schools will remain closed until at least May 31st.
+     <LI>The order included closure of non-essential workplaces, outdoor amenities, bars and restaurants, and restrictions on social gatherings of more than five people.
+     <LI>Physical distancing, along with testing and isolation of cases, has helped to flatten the curve and reduced the number of severe cases and deaths in our population.
+     <LI>We are starting to think about how to relax the restrictive measures we currently have in place.
+     <LI>The challenge we face is: how do we re-open our economy without losing the hard-earned gains we've already achieved together?
+     <LI>The tool below lets you explore different scenarios for relaxing physical distancing measures over the next 6 months... you can change the amount of time the interventions are in place and their intensity.
+     </UL>
+     <H2>Details</h2>
+     <UL>
+     <LI>The model below represents COVID-19 spread in the population of Ontario
+     <LI>The model has been fit to data on the number of COVID-19 cases in intensive care units (ICU) and deaths among hospitalized cases.
+     <LI>The model describes community transmission. It does not capture the outbreaks that we're experiencing in long-term care homes and other institutional settings.
+     <LI>The graph shows the number of people in the population experiencing different stages of SARS-CoV-2 infection and COVID-19 disease.
+     <LI>When ICU capacity is exceeded, the bars showing cases in ICU turns red to highlight cases that can't receive the care they need because there aren't any remaining ICU beds.     
+     </UL>
+     </article>
+   </article>
+
+   <article>
+     <H2>Phasing out the lockdown</H2>
+     <article>
+We start with our best estimate of how much physical distancing is currently happening. The number of contacts each person has with others is reduced to 30% of normal.
+To start, you can decide how long you want this phase of the intervention to last.
+For each of the next stages of your exit plan, you can choose an intervention and change the amount of time it is in place
+as well as its intensity. 
+     </article>
+   </article>
+   
+  <BR><BR>
+  <section class="sticky">
+      <DIV ID="mainDIV">
+        <svg viewbox="0 0 1000 600" style="width:100%; height:100vh" preserveAspectRatio=none>
+          <g id="lines"></g>
+          <g id="bars"></g>
+        </svg>
+        <div id="hover"></div>
+        <div id="deriv"></div>
+      </DIV>
+  </section>
+  <SCRIPT>
+  // Solver.
+    var API = {
+      calc : function (params) {
+      
+        /** Some helpers for component wise multiplication - mimicking the R behavior. *******/
+        self.cmul  = (a,b)=>a.map((a,i)=>a*b[i]);
+        self.ccmul = (a,b)=>a.map((row,ri)=>row.map((col,ci)=>col * b[ri][ci]));
+        self.cadd  = (...args)=>args[0].map((x,i)=>{
+          for (var j=1; j<args.length; j++) x += args[j][i]; 
+          return x;
+        });
+        self.cmadd = (s, state, d)=>state.map( (r,ri)=>r.map( (c,ci)=> c + s * d[ri][ci]  )  );
+        self.sum   = a=>a.reduce((s,x)=>s+x,0);
+        
+        /** RK4 Integrator *******************************************************************/
+        self.cmix = (state, d1,d2,d3,d4, h)=>state.map((r,ri)=>r.map((c,ci)=> c + h/6 * (d1[ri][ci] + 2*(d2[ri][ci] + d3[ri][ci]) + d4[ri][ci] )));
+        self.RK4  = (dState, state, t, h, ...params)=>{
+            var V1 = dState(t,state,...params), 
+                V2 = dState(t+0.5*h,cmadd(0.5*h,state,V1),...params), 
+                V3 = dState(t+0.5*h,cmadd(0.5*h,state,V2),...params), 
+                V4 = dState(t+h,cmadd(h,state,V3),...params);
+            return cmix(state,V1,V2,V3,V4,h);    
+         }
+
+        /** Model setup and gradient *********************************************************/ 
+        return Algebra().inline((params)=>{
+         // Integrators
+         var Euler = (dState, state, t, h, ...params)=>state + h*dState(t,state,...params);
+         
+         // Creates a single compartment. (stratified in 16 age groups and healthy/comorbidities)
+         var compartiment = (x,y=0)=>[...Array(x)].map((x,i)=>(y instanceof Array)?y[i]||0:y);
+         
+         // Our initial state.     
+         var state; 
+         function initState() { state = [
+               compartiment(32,params.population||[650332,682299,703567,748657,888276,936968,877531,800775,736630,671913,691037,665423,477320,346498,242304,363103,77923,81754,84302,112859,147011,113444,132286,165178,178438,269142,300408,402671,460441,432149,402121,723787]), // s    susceptible.
+               compartiment(32),      // v    vaccinated (susceptible)
+               compartiment(32),      // e    exposed
+               compartiment(32),      // q    exposed - quarantined
+               compartiment(32),      // a    infectious, pre-symptomatic
+               compartiment(32),      // w    infectious, pre-symptomatic, in isolation
+               compartiment(32,params.mild),      // b    infectious - mild
+               compartiment(32,params.severe),    // c    infectious -severe
+               compartiment(32),      // y    infectious - mild, in isolation
+               compartiment(32),      // z    infectious - severe, in isolation
+               compartiment(32),      // g    isolated - mild, not previously isolated 
+               compartiment(32),      // h    hospitalized
+               compartiment(32),      // icua pre-ICU
+               compartiment(32),      // icub ICU
+               compartiment(32),      // icuc post-ICU
+               //compartiment(32),      // m    LTC
+               compartiment(32),      // r    recovered 
+               compartiment(32),      // d    dead
+               compartiment(32),      // inc  cumulative incidence
+               compartiment(32),      // k    cumulative number of mild cases detected and isolated (currently only among those not already quarantined)
+               compartiment(32),      // j    cumulative incidence of hospitalization   
+             ];
+             if (interv) {
+               interv.on = false;
+               interv.duration = params["interv.duration"];
+             }  
+         };
+
+         // Aging and Births (from R)
+         var aging = [
+              [-0.000547945205479452, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0.000547945205479452, -0.000522272935135275, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0.000522272935135275, -0.000506485240737361, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0.000506485240737361, -0.00047598072464408, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0.00047598072464408, -0.00040116619313126, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0.00040116619313126, -0.0003803185395551, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0.0003803185395551, -0.000406078305347461, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0.000406078305347461, -0.000445001781236756, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0.000445001781236756, -0.000483752089067596, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0.000483752089067596, -0.000530345895033826, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000530345895033826, -0.000515668916960833, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000515668916960833, -0.00053551846174518, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.00053551846174518, -0.000746556401093319, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000746556401093319, -0.00102842239022985, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.00102842239022985, -0.00147065793948867, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.00147065793948867, -0.000981391785168019, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -0.000547945205479452, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000547945205479452, -0.0005222684424808, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0005222684424808, -0.000506483051962888, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000506483051962888, -0.000378326356308095, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000378326356308095, -0.000290437683211293, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000290437683211293, -0.000376375429697254, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000376375429697254, -0.000322766840380504, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000322766840380504, -0.000258494074553363, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000258494074553363, -0.000239284985522004, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000239284985522004, -0.000158643148399638, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000158643148399638, -0.000142131814887005, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000142131814887005, -0.000106035781684242, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000106035781684242, -9.27318250255198E-05, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9.27318250255198E-05, -9.88028070100251E-05, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9.88028070100251E-05, -0.000106180811861543, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000106180811861543, -5.89918501528424E-05]
+            ]
+            
+          // faster aging.
+          function doAging(test) {    
+              var test2 = [];
+              for (var jj=0;jj<32;jj+=16) for (var iii=jj;iii<jj+16;iii++) {
+                test2[iii] = test[iii]*(aging[iii][iii]);
+                if (iii!=jj) test2[iii] += test[iii-1]*(aging[iii][iii-1]);
+              }  
+              return test2;
+          }      
+          
+          // Births matrix - exported from R.
+          var births = [
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.000981391785168019, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5.89918501528424E-05],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            ]
+
+         // Intervention state is stored globally.
+         self.interv = {on:false,duration:0};
+             
+         // Our model function.
+         var dState = (t,[s,v,e,q,a,w,b,c,y,z,g,h,icua,icub,icuc,/*m,*/r,d,inc,k,j],params)=>{
+           // Intervention - automatic (if minimum ICU cases reached), or fixed.
+             if (params["interv.fixed"]!==true) {
+             
+                // Turn off the automatic intervention. 
+                if (interv.start && t>(interv.start+interv.duration)) {
+                    interv.on = false;
+                    interv.start = undefined;
+                }
+                
+                // Turn on the automatic intervention if the threshold is breached.
+                if (interv.start===undefined && sum(icub) >= params.threshold) { 
+                    interv.on = true; 
+                    interv.start = t;
+                }
+                
+             } else {
+               interv.on = params["interv.on"][Math.floor(t)+1]; 
+               
+               var start  = params["interv.on"].indexOf(1)-1;
+               var idx = 0;
+               interv.idx = idx;
+
+               if (true) {
+                 if (t>=start) {
+                    while (idx < params.intervention_list.length && t-start > params.intervention_list[idx].duration) { start += params.intervention_list[idx].duration; idx++; }
+                    if (idx < params.intervention_list.length && params.intervention_list[idx].enabled) {
+                      interv.idx = idx+1;
+                      switch (params.intervention_list[idx].tp) {
+                        case 0:
+                          params["time.to.detect.interv"] = params["time.to.detect"].slice(0);
+                          params["p.quarantine.e.interv"] = 0.1;
+                          params["interv.strength"] = 0.29732377315776015;
+                          interv.on = 1;
+                          break;
+                        case 1:
+                          params["time.to.detect.interv"] = params["time.to.detect"].slice(0);
+                          params["p.quarantine.e.interv"] = 0.1;
+                          params["interv.strength"] = params.intervention_list[idx].strength;
+                          interv.on = 1;
+                          break;
+                        case 2:
+                          params["time.to.detect.interv"] = [11.7456911338273, 11.7456911338273, 11.7456911338273, 6.54814000762375, 6.54814000762375, 6.54814000762375, 6.54814000762375, 6.54814000762375, 6.54814000762375, 6.54814000762375, 3.72800960735767, 3.72800960735767, 3.72800960735767, 3.72800960735767, 3.72800960735767, 3.72800960735767, 11.7456911338273, 11.7456911338273, 11.7456911338273, 6.54814000762375, 6.54814000762375, 6.54814000762375, 6.54814000762375, 6.54814000762375, 6.54814000762375, 6.54814000762375, 3.72800960735767, 3.72800960735767, 3.72800960735767, 3.72800960735767, 3.72800960735767, 3.72800960735767];
+                          params["p.quarantine.e.interv"] = params.intervention_list[idx].testing;
+                          params["interv.strength"] = 1.0;
+                          interv.on = 1;
+                          break;
+                      }
+                    } else {
+                      params["interv.strength"] = 1.0; 
+                      params["p.quarantine.e.interv"] = 0.1;
+                      params["time.to.detect.interv"] = params["time.to.detect"].slice(0);
+                      interv.on = 0;
+                    }
+                 } else {
+                     params["interv.strength"] = 0.29732377315776015;
+                     params["p.quarantine.e.interv"] = 0.1;
+                     params["time.to.detect.interv"] = params["time.to.detect"].slice(0);
+                     interv.on = 0;
+                 }
+               }
+               
+             }
+
+           // Derived parameters.  
+             var time_to_detect = interv.on?params["time.to.detect.interv"]:params["time.to.detect"],
+                 rr_i     = interv.on?params["rr.isolate.interv"]:params["rr.isolate"],
+                 delta_s  = interv.on?params["p.quarantine.s.interv"]:params["p.quarantine.s"],
+                 delta_e  = interv.on?params["p.quarantine.e.interv"]:params["p.quarantine.e"],
+                 theta    = interv.on?ccmul(params.cm,params["rr.contact.interv"])*params["interv.strength"]:params.cm*params["rr.contact"],
+                 rho      = 1/params["quarantine.dur"],
+                 epsilon  = 1/params["latent.period"],
+                 gamma_p  = 1/params["inf.period.presymp"],
+                 gamma_s  = 1/params["inf.period.severe"],
+                 gamma_m  = 1/params["inf.period.mild"],
+                 gamma_d  = time_to_detect.map(x=>1/x),                                                              // rate of entry to isolated compartment
+                 gamma_i  = time_to_detect.map(x=>x<params["inf.period.mild"]?1/(params["inf.period.mild"]-x):1),    // rate of exit from isolated (and infectious) compartment
+                 sigma_s  = params["p.severe"],
+                 sigma_i  = params["p.icu"],
+                 psi      = 1/params["hosp.dur"],
+                 //p_ltc    = params["p.ltc"],
+                 pi_a     = 1/params["icu.a.dur"],
+                 pi_b     = 1/params["icu.b.dur"],
+                 pi_c     = 1/params["icu.c.dur"],
+                 //pi_d     = 1/params["ltc.dur"],
+                 cfr_icu  = params["cfr.icu"];
+                 //omega    = params.rw,                    // Random walks for confidence intervals. Not used in JS version.
+                 //omega_p  = omega[Math.floor(t)][1],
+                 //omega_m  = omega[Math.floor(t)][2],
+                 //omega_s  = omega[Math.floor(t)][3];
+
+           // Calculation of beta.
+             var eig  = 11.6366531220309; // from R.
+             var beta = params["R0"] * (1/(params["inf.period.presymp"] + 
+                        params["inf.period.mild"] * (1 - params["p.severe"].reduce((s,a)=>s+a,0)/params["p.severe"].length) +
+                        params["inf.period.severe"] * (params["p.severe"].reduce((s,a)=>s+a,0)/params["p.severe"].length))) / eig;
+    
+           // calculate force of infection
+             var lh = beta * cadd(cadd(a,rr_i*w),cadd(b,rr_i*cadd(g,y)),cadd(c,rr_i*z));
+             var denom = cadd(s,v,e,q,a,w,b,c,y,z,g,h,icua,icub,icuc,/*m,*/r); 
+             lh = lh.map((x,i)=>x/denom[i]); 
+
+             var sweep = theta.map((row,i)=>row.map((el,j)=>el*lh[j]));
+             var lambda = sweep.map(row=>row.reduce((s,x)=>s+x,0))
+            
+             var ls = -lambda.map((x,i)=>x*s[i]);
+             
+           // The derivatives for each of the compartments   
+             var dsdt = cadd(ls,-delta_s*s,rho*v,doAging(s),births*cadd(s,v,e,q,a,w,b,c,y,z,g,h,icua,icub,icuc,/*m,*/r));
+             var dvdt = cadd(delta_s*s, - rho*v , doAging(v));      
+             
+             var dls = ls.map(x=>(1-delta_e)*-x); 
+             var dedt = cadd(dls, -epsilon*e, doAging(e));
+             var dqdt = cadd(ls.map(x=>delta_e*-x),-epsilon*q,doAging(q));
+             var dadt = cadd(epsilon*e, -gamma_p*a, doAging(a)); 
+             var dwdt = cadd(epsilon*q, -gamma_p*w, doAging(w));
+
+             var sga = a.map((x,i)=> (1-sigma_s[i])*gamma_p*x  );
+             var dbdt = cadd(sga, -gamma_m*b, -cmul(gamma_d,b), doAging(b));
+             
+             var dcdt = cadd(cmul(sigma_s,a)*gamma_p, - gamma_s*c,  doAging(c)); 
+             var dydt = cadd(cmul(sigma_s.map(x=>1-x),w)*gamma_p, - gamma_m*y,  doAging(y));
+             var dzdt = cadd(cmul(sigma_s,w)*gamma_p, -gamma_s*z, doAging(z));  
+             
+             var dgdt = cadd(cmul(gamma_d,b), - cmul(gamma_i,g), doAging(g)); 
+//             var dhdt = cadd(cmul(1-p_ltc,cmul((1-sigma_i),cadd(c,z)))*gamma_s, - psi*h, doAging(h));
+             var dhdt = cadd(cmul((1-sigma_i),cadd(c,z))*gamma_s, - psi*h, doAging(h));
+
+//             var dicuadt = cadd(cmul(1-p_ltc,cmul(sigma_i,cadd(c,z)))*gamma_s, -pi_a*icua, doAging(icua));  
+             var dicuadt = cadd(cmul(sigma_i,cadd(c,z))*gamma_s, -pi_a*icua, doAging(icua));  
+             var dicubdt = cadd(pi_a*icua, - pi_b*icub, doAging(icub));  
+             var dicucdt = cadd(cmul((1-cfr_icu)*pi_b,icub), - pi_c*icuc,  doAging(icuc));  
+//             var dmdt    = cadd(gamma_s*cmul(p_ltc,cadd(c,z)), -pi_d*m, doAging(m)); 
+             var drdt    = cadd(cmul(gamma_i,g), gamma_m*cadd(b,y), psi*h, cmul(cfr_icu*pi_b,icub), pi_c*icuc, /* pi_d*m,*/ doAging(r));  
+
+//             var dddt   = cadd(cmul(cfr_icu,pi_b*icub),cmul(sigma_i,cmul(cfr_icu,pi_d*m))); //to keep deaths as absorbing state and pop size constant, moving all hosp back to recovered/removed state 
+             var dddt   = cmul(cfr_icu,pi_b*icub); //to keep deaths as absorbing state and pop size constant, moving all hosp back to recovered/removed state 
+             var dincdt = cmul(lambda,s); 
+             var dkdt   = cmul(gamma_d,b);
+             var djdt   = gamma_s*cadd(c,z); 
+             
+           // Return the delta state
+             return [dsdt,dvdt,dedt,dqdt,dadt,dwdt,dbdt,dcdt,dydt,dzdt,dgdt,dhdt,dicuadt,dicubdt,dicucdt,/*dmdt,*/drdt,dddt,dincdt,dkdt,djdt]
+         }     
+         
+         // Integration parameters.
+         var days = params.days, steps = params.steps||2, results = [];
+
+         // Run the model.
+         initState();
+         for (var ii=0; ii<days; ++ii) {
+           // Store the current state.
+           results[ii]=[...state.map(row=>(row.reduce((s,a)=>s+a,0))),interv.on?interv.idx:0];
+
+           // Update the state
+           for (var j=0; j<steps; j++) state = ((params.integrator==1)?RK4:Euler)(dState,state,ii,1/steps,params);
+
+           // Report progress to main thread.
+           if (ii%10) postMessage({progress:ii/(days-1),data:results});
+         }  
+         return results;
+       })(params);    
+
+      }
+    }
+
+    // Names, colors, age names.
+    self.names  = ['susceptible','exposed','infectious','infectious (isolated)','hospitalized','ICU (<font color=red>&gt;2800</font>)','recovered','fatalities'];                
+    self.colors = ['blue','orange','red','pink','blueviolet','darkturquoise','green','#666']
+    
+    // Default selection graph and data.
+    self.checks = [false, false, false, false, false, true, false, true];
+
+  // Generate html for the checks.
+    checks_html = ()=>names.slice(0,17).map((name,i)=>`<LABEL><INPUT TYPE="checkbox" ${checks[i]?"checked":""} ONINPUT="checks[${i}] = !checks[${i}]; updateGraph(results,params);"></INPUT>${name}</LABEL>`).join('');
+    document.querySelector('#hover').innerHTML = checks_html();
+    
+  // Rendering the graph.
+    // SVG Graph mouse over handler. Displays current cumulative and day values.
+    document.querySelector('svg').onmousemove = document.querySelector('svg').onmouseleave = function(e){ 
+      // Check if we're over a bar.
+       var ids, text = document.querySelector('#hover');
+       if (e.target && e.target.getAttribute("data-id")) ids = JSON.parse(e.target.getAttribute("data-id"));
+
+      // Update the header.  
+       if (ids) {
+         var cats = ``;
+         checks.forEach((c,i)=>{
+           if (!c) return;
+           cats += `<DIV CLASS="summary">
+                      <SPAN>&sum; ${results[ids[0]][i]|0}</SPAN>
+                      <SPAN>&Delta; ${results[ids[0]][i]-results[ids[0]-1][i]|0}</SPAN>
+                    </DIV>
+                    <B CLASS="${i==ids[1]?'title_sel':'title'}">${names[i]}</B><BR>`;
+         });  
+         text.innerHTML = `Day ${ids[0]} ${results[ids[0]][8]?'[exit-strategy phase '+results[ids[0]][8]+']':''}<BR>${cats}`
+       } else text.innerHTML = checks_html(); 
+     }
+     
+    // Update the SVG graph 
+    self.updateGraph = function(results,params) {
+
+      if (!results) return;
+      var days = params.days, svg = document.querySelector('svg'), res ='', max=0, width = 1000/days;
+
+
+
+       // First figure out the maximum
+       for (var ii=0; ii<days; ++ii) {
+          for (var h=0, j=checks.length-1; j>=0; --j) if (checks[j]) h+= results[ii][j]||0;
+          max = Math.max(max,h*1.1);
+       }
+
+       // The number of horizontal lines we want.
+       var step = 1, m = max, lines='', scale=600/max;
+       while (m>20) { step*=10; m/=10; };
+       while (Math.floor(max/step)+1 < 5) step /= 2;
+       while (Math.floor(max/step)+1 > 8) step *= 2;
+
+       // rerender the lines and counts.
+       for (var i=0; i<Math.floor(max/step)+1; i++)
+         lines += `<line x1=0 x2=1000 y1=${600-i*step*scale} y2=${600-i*step*scale} stroke="rgba(0,0,0,0.1)"/><text x="990" y="${590-i*step*scale}" text-anchor="end">${max>5000?Math.floor(i*(step/1000))+'k':i*step}</text>`;
+       svg.getElementById('lines').innerHTML = lines;
+
+       // render the actual data
+
+
+       // Now render the intervention state.
+       if (params["interv.strength"]<1 || params["interv.fixed"]) {
+         for (var ii=0; ii<results.length; ++ii) {
+           var h2 = results[ii][20-12];
+           if (h2 && params.intervention_list[h2-1].enabled)
+           res += `<rect style="pointer-events:none; fill:${["#CCFFCC","#AADDAA","#CCFFCC","#AADDAA","#CCFFCC","#BBEEBB"][h2]};" x="${ii*width}" y="0" width="${width}" height="${h2?600:0}"/>`;
+         }
+       } else {
+         // reset iv state for hover.
+         for (var ii=0; ii<results.length; ++ii) results[ii][20-12] = 0;
+       
+       }  
+
+
+       // Now render the bars
+       for (var ii=0; ii<results.length; ++ii) {
+          var h = 0, k = 0;
+          for (var j = Math.min(checks.length-1,results[0].length-1); j>=0; --j) {
+            if (checks[j]) {
+              var h2 = (results[ii][j]/max)*600;
+              res += `<rect data-id="[${ii},${j}]" style="fill:${colors[j%colors.length]};" x="${ii*width}" y="${600-h-h2}" width="${width}" height="${h2}"/>`;
+              if (j==13-8 && results[ii][j] > params.max_icu) {
+                var h3 = h2-(params.max_icu/max)*600;
+                res += `<rect data-id="[${ii},${j}]" style="fill:red;fill-opacity:1;" x="${ii*width}" y="${600-h-h2}" width="${width}" height="${h3}"/>`;
+              }
+              if (ii >= params.data_start && ii<params.data_start + params.data.length) {
+                var h3 = (params.data[ii-params.data_start][j]/max)*600;
+                res += `<rect style="pointer-events:none; stroke:${colors[j%colors.length]}; fill:rgba(0,0,0,0.5)" x="${ii*width}" y="${600-h-h3}" width="${width}" height="${h3}"/>`;
+              }  
+              h += h2; ++k;
+            }
+          }  
+       }
+       
+       svg.getElementById('bars').innerHTML = res;
+    }
+  
+  
+  // Fetch all scenarios.
+    fetch("web/scenarios.json")
+    .then(response=>response.json())
+    .then(data=>{
+      Promise.all(data.map(scenario=>fetch("web/params_"+scenario.replace(" ","_")+".json").then(response=>response.json())))
+      .then(scenarios=>{
+
+        var ontario = {
+          DEATHS :  [2,2,2,4,5,10,13,15,17,20,29,39,46,52,63,76,83,98,107,113,126,145,153,163,173,189,197,213,224,239,247,263,272,282,291,303,307] ,        
+          ICUB   : [6,9,10,9,17,29,43,63,72,92,99,125,143,167,194,196,200,216,233,246,264,260,257,261,263,255,254,248,245,250,247,247,250,243,233,243,245]
+        }  
+
+        scenarios.forEach(scenario=>{
+          var params = scenario.params;
+          params = {"R0":3.085797135648312,"latent.period":2.7941356887197566,"inf.period.presymp":2.2080105746445824,"inf.period.mild":3.63284659083289,"inf.period.severe":3.6807573686927118,"p.severe":[0.01105917873099,0.01105917873099,0.01105917873099,0.0270580925139558,0.0270580925139558,0.0270580925139558,0.0270580925139558,0.0270580925139558,0.0270580925139558,0.0270580925139558,0.117957714542174,0.117957714542174,0.117957714542174,0.117957714542174,0.353784903790709,0.353784903790709,0.0236720096464102,0.0236720096464102,0.0236720096464102,0.0579174496211877,0.0579174496211877,0.0579174496211877,0.0579174496211877,0.0579174496211877,0.0579174496211877,0.0579174496211877,0.252486755520668,0.252486755520668,0.252486755520668,0.252486755520668,0.757271390489436,0.757271390489436],"p.icu":[0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27],"hosp.dur":10,"icu.a.dur":2.990958684526254,"icu.b.dur":9.202036771325577,"icu.c.dur":21,"cfr.icu":[0,0,0,0.13241656472398533,0.13241656472398533,0.13241656472398533,0.13241656472398533,0.13241656472398533,0.13241656472398533,0.13241656472398533,0.2673923625880995,0.238497821526764,0.238497821526764,0.238497821526764,0.3872449455755827,0.3986020976775571,0,0,0,0.35090389651856135,0.35090389651856135,0.35090389651856135,0.35090389651856135,0.35090389651856135,0.35090389651856135,0.35090389651856135,0.6031897195614541,0.6031897195614541,0.6031897195614541,0.6031897195614541,0.6666666666666666,0.6666666666666666],"p.quarantine.s":0,"p.quarantine.e":0.1,"quarantine.dur":14,"rr.isolate":0.1,"time.to.detect":[35.1175198498106,35.1175198498106,35.1175198498106,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206,35.1175198498106,35.1175198498106,35.1175198498106,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206],"rr.contact":1,"init.infected":665,"p.ltc":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0.07,0.07],"ltc.dur":17,"beta":0.0472644491704166,"cm":[[1.49203695156884,0.639952716564911,0.357613932947617,0.234328955613932,0.456280116361116,0.816346809913389,0.771790102635475,0.757397302666314,0.285844258220085,0.190449699865876,0.279470714876777,0.188797446629647,0.139365819993632,0.0788790902291239,0.0423313859777149,0.00516545314331796,0.17877637172567,0.076680010362096,0.0428496074650318,0.0353247636790048,0.075515038328587,0.0988397122461114,0.116345776408168,0.156230366407313,0.0692416515052002,0.0762866816407802,0.1214916690636,0.114248014618981,0.134437562900544,0.0983772488251755,0.070251994439814,0.0102964939266343],[0.609969720121372,5.26288873719407,0.944506324830457,0.453191145260337,0.457878291145037,0.745042004694401,0.949519761821734,0.990552856129093,0.713873004640372,0.251720014841828,0.272839285118636,0.15851689165077,0.219142902512492,0.125501846420244,0.0317992200299477,0.0747155918927849,0.0730867779857329,0.630606531477496,0.113171556079033,0.0683179339309409,0.0757795386338515,0.0902064373388969,0.14313815832415,0.204323985725942,0.172925445884662,0.100829167220398,0.11860885012513,0.0959241794736689,0.211393566529277,0.156524705564424,0.0527731038598728,0.148933426904496],[0.330555276529015,0.915955013418048,5.21234470794853,1.01916285819895,0.231646947072857,0.382209040155899,0.498083214098887,0.773764653676243,0.770349201350411,0.449007868824373,0.277760793776572,0.249735062823295,0.129165921207937,0.107460894996371,0.074579317709011,0.0456785421141165,0.0396072449348494,0.109750983318133,0.624547603241023,0.153637381355515,0.0383379144951882,0.0462762040447974,0.0750850238456367,0.159606503655752,0.186605990511606,0.17985494525501,0.120748331184629,0.151123522153756,0.124598353152819,0.134024203059719,0.123769767797747,0.0910527727976635],[0.203553320629233,0.413022071816577,0.957780872488287,5.25082240624134,1.17025191167949,0.740057393810941,0.406515866879248,0.615932011022363,0.637447362071309,0.677082450844441,0.413454457844657,0.220507407511318,0.124263390525824,0.140101284271491,0.102238897719431,0.0906240129444131,0.0243898276624735,0.0494888699225595,0.114762123738759,0.791554164251442,0.193678433040985,0.0896029223874118,0.0612814338934901,0.127049942514004,0.154412435541968,0.271212679298026,0.179737158462134,0.133436833848529,0.11986918586504,0.17473298517348,0.169672839861643,0.180644286764356],[0.334055587039791,0.351703637349166,0.183478049177518,0.986312008252204,2.43923167568905,1.40475088731201,0.732063246222314,0.535497630484451,0.540461106727132,0.647009051839131,0.49574744408752,0.352756045236903,0.192872971165931,0.117322291297537,0.0670043950857994,0.055188418451676,0.0400266533230744,0.0421416111819653,0.0219844968592374,0.148685161481607,0.403696472576904,0.170081112332783,0.110357034212769,0.110458527811383,0.130918913107226,0.259166454928075,0.215511612523561,0.213465163499893,0.186052593054162,0.146323242448555,0.111198636243301,0.110009170471969],[0.566611083393023,0.542538715047883,0.286999841782606,0.591321313298125,1.33174932247201,1.88948856300832,0.983640209313105,0.649814886381155,0.589478665698041,0.641001194945725,0.669539559489064,0.504281680913523,0.282287019186389,0.199731118961121,0.0763832478793201,0.0396622605811011,0.0678915314812043,0.0650077313758699,0.0343885666353841,0.0891408643711514,0.220406494879895,0.228771036515565,0.148281745863329,0.134039053794969,0.142792710247787,0.256759943043344,0.291062620361849,0.305158686632607,0.272304779605297,0.249102746128202,0.126763520290545,0.0790602903286765],[0.571968170955937,0.738271792074818,0.399341918056355,0.346815040551522,0.74102705443041,1.0502642067798,1.45078740429957,0.892556794411017,0.638507338675713,0.500352018119301,0.553978359419089,0.442626331104535,0.305615196545088,0.143515826984588,0.0397000444834425,0.08808677218314,0.068533419523258,0.0884607365528671,0.0478494903484485,0.0522818843096427,0.122641080361137,0.127161410714055,0.218703228222333,0.184110076097809,0.154669199596292,0.20042139809866,0.240825789351901,0.267848853093737,0.294808025459685,0.178991570270428,0.0658850930555269,0.175586708394363],[0.615103746542524,0.843998905040773,0.679835504471335,0.575844415192744,0.594011667717156,0.760333120368116,0.978110276115381,1.05804856745048,0.831149070618408,0.601504578834444,0.496477979479699,0.387177594168386,0.335166757975693,0.226403660260226,0.0604512934952366,0.101251821256057,0.0737019387664041,0.10112910393054,0.0814584718981171,0.0868077435384133,0.098309815060597,0.0920578189511708,0.147448119765797,0.218246506539709,0.201333882495972,0.240939147414412,0.215829191287207,0.234294860594507,0.323314583945961,0.282368485179702,0.100323290542451,0.20182910069996],[0.252356906638047,0.661220473226886,0.735772744181617,0.647855001488155,0.651722886712664,0.749796568754683,0.760639647333719,0.903524696285049,0.886768447671612,0.840629627885101,0.555007381518147,0.390440374839324,0.346855501901002,0.185230542877495,0.142773208799458,0.139668487348098,0.0302374898297432,0.0792283420731833,0.0881609198271077,0.0976632391241272,0.107861107694585,0.0907820992240997,0.114664868121113,0.186372454538381,0.214806874910915,0.336723265226677,0.241273126427534,0.236269284615839,0.334589990259782,0.231017765972578,0.236942458629023,0.278406500227808],[0.184332695175082,0.255610941307229,0.470160748854625,0.754416890879989,0.855352720562715,0.893862163145982,0.65346913486158,0.716863387248277,0.921596996618613,1.30469827655513,0.590901315151043,0.454205579316316,0.322156337586456,0.140156453317442,0.138092276956091,0.107191391881749,0.022086805825529,0.0306276528261528,0.0563350632561541,0.113727295527624,0.141562148254197,0.108224933227104,0.0985091329813978,0.147869327312786,0.223243588888088,0.522610968307805,0.256876957792267,0.274855865861085,0.310764238319462,0.174801791481276,0.229174113930684,0.213668672404017],[0.263008708574568,0.269389296661626,0.282797199563845,0.447929089247909,0.637245989207938,0.90781990251658,0.703483581515017,0.575319634140945,0.591625466433364,0.574548505169887,0.58702046379762,0.690320517849616,0.2904977435969,0.1663039398944,0.121426584946286,0.249862556579335,0.031513792337231,0.0322785942222905,0.0338850024484254,0.0675246863162032,0.105465159611932,0.109914875450486,0.106048708324031,0.11867271896367,0.143312741782763,0.230141601335937,0.255189871871572,0.417737368926266,0.280225156204433,0.207412687292351,0.201516193563398,0.49806052342968],[0.18451574571596,0.162537087922162,0.264050609830735,0.248089432113409,0.470895548904765,0.710068329471902,0.583716413409956,0.465932403854675,0.432221449090114,0.458635534712753,0.716892893232192,0.822715471944113,0.460117706600362,0.229964765649232,0.0863535092168374,0.148874244892847,0.0221087390031934,0.0194754163291877,0.0316387700246752,0.037399136345332,0.0779339141663609,0.0859719772378677,0.0879940531609134,0.0961091225424214,0.104699416169233,0.18371141067915,0.311648088698719,0.497854239789139,0.44384701446572,0.286809861847831,0.14330988955933,0.296756686362435],[0.189881112143004,0.313251033355759,0.190389842634929,0.194902072322324,0.35892992402453,0.554122818639556,0.561859568087253,0.562291880956142,0.535289047945477,0.453492481473076,0.420566264229387,0.641441600350149,0.411322635990925,0.291503044055061,0.129595210558551,0.216132902342174,0.0227516190215448,0.0375341675437993,0.0228126738659002,0.0293812159376392,0.059403436612911,0.067090774751908,0.0846991785178989,0.115985449486527,0.129666056415426,0.18165130522646,0.182828807002551,0.388159006608721,0.396777436181801,0.363559815598793,0.215072618136783,0.43082592263775],[0.14804586608548,0.247129231079792,0.218200219077489,0.302708261458483,0.300765302035252,0.540094508686237,0.363464109950455,0.52323069987383,0.393786904397281,0.271784954077317,0.331667645160452,0.44162980523007,0.401561431778428,0.372722440723846,0.222920255403618,0.0666407226514477,0.0177389057019781,0.0296113626983146,0.0261449369692872,0.0456328487944986,0.0497771051086649,0.0653922881500772,0.0547914697587958,0.10792819524056,0.09538920169806,0.108866395069417,0.144182748459722,0.267245820029962,0.387361407880439,0.464855872288929,0.36995227492389,0.132837483374479],[0.113615354701777,0.0895427893357655,0.216552540703314,0.315891881479201,0.245635218771599,0.295367220512211,0.143778145369453,0.199781615444434,0.434045780498649,0.382932168211826,0.346301600392593,0.237146770848173,0.255292466916797,0.318778982834963,0.253139652017305,0.187121686404227,0.0136134301932344,0.0107291395698311,0.0259475107365336,0.0476202611501143,0.0406529942797414,0.0357617751767267,0.0216742607820617,0.0412094879034444,0.105141334157743,0.153387610623499,0.1505444298507,0.143505901305192,0.246264809267655,0.397578106231916,0.420103547646141,0.372996764106757],[0.00925153323877868,0.140396453989241,0.0885090865115479,0.186851393843966,0.135010031832788,0.102346356191365,0.212884149347824,0.223297321053031,0.283346592661667,0.198354983829497,0.475524221807349,0.272827122495086,0.284119263531192,0.0635931873801135,0.12486906773695,0.280410313494403,0.00110852183894588,0.0168224952688431,0.0106052344852679,0.0281675873702325,0.0223443612005391,0.0123916505491897,0.0320918492687167,0.0460601353649871,0.068636628024059,0.0794532284058181,0.2067201617637,0.165097344459417,0.274072232086578,0.0793128166198035,0.207229242552537,0.558952527445859],[1.49203695156884,0.639952716564911,0.357613932947617,0.234328955613932,0.456280116361116,0.816346809913389,0.771790102635475,0.757397302666314,0.285844258220085,0.190449699865876,0.279470714876777,0.188797446629647,0.139365819993632,0.0788790902291239,0.0423313859777149,0.00516545314331796,0.17877637172567,0.076680010362096,0.0428496074650318,0.0353247636790048,0.075515038328587,0.0988397122461114,0.116345776408168,0.156230366407313,0.0692416515052002,0.0762866816407802,0.1214916690636,0.114248014618981,0.134437562900544,0.0983772488251755,0.070251994439814,0.0102964939266343],[0.609969720121372,5.26288873719407,0.944506324830457,0.453191145260337,0.457878291145037,0.745042004694401,0.949519761821734,0.990552856129093,0.713873004640372,0.251720014841828,0.272839285118636,0.15851689165077,0.219142902512492,0.125501846420244,0.0317992200299477,0.0747155918927849,0.0730867779857329,0.630606531477496,0.113171556079033,0.0683179339309409,0.0757795386338515,0.0902064373388969,0.14313815832415,0.204323985725942,0.172925445884662,0.100829167220398,0.11860885012513,0.0959241794736689,0.211393566529277,0.156524705564424,0.0527731038598728,0.148933426904496],[0.330555276529015,0.915955013418048,5.21234470794853,1.01916285819895,0.231646947072857,0.382209040155899,0.498083214098887,0.773764653676243,0.770349201350411,0.449007868824373,0.277760793776572,0.249735062823295,0.129165921207937,0.107460894996371,0.074579317709011,0.0456785421141165,0.0396072449348494,0.109750983318133,0.624547603241023,0.153637381355515,0.0383379144951882,0.0462762040447974,0.0750850238456367,0.159606503655752,0.186605990511606,0.17985494525501,0.120748331184629,0.151123522153756,0.124598353152819,0.134024203059719,0.123769767797747,0.0910527727976635],[0.203553320629233,0.413022071816577,0.957780872488287,5.25082240624134,1.17025191167949,0.740057393810941,0.406515866879248,0.615932011022363,0.637447362071309,0.677082450844441,0.413454457844657,0.220507407511318,0.124263390525824,0.140101284271491,0.102238897719431,0.0906240129444131,0.0243898276624735,0.0494888699225595,0.114762123738759,0.791554164251442,0.193678433040985,0.0896029223874118,0.0612814338934901,0.127049942514004,0.154412435541968,0.271212679298026,0.179737158462134,0.133436833848529,0.11986918586504,0.17473298517348,0.169672839861643,0.180644286764356],[0.334055587039791,0.351703637349166,0.183478049177518,0.986312008252204,2.43923167568905,1.40475088731201,0.732063246222314,0.535497630484451,0.540461106727132,0.647009051839131,0.49574744408752,0.352756045236903,0.192872971165931,0.117322291297537,0.0670043950857994,0.055188418451676,0.0400266533230744,0.0421416111819653,0.0219844968592374,0.148685161481607,0.403696472576904,0.170081112332783,0.110357034212769,0.110458527811383,0.130918913107226,0.259166454928075,0.215511612523561,0.213465163499893,0.186052593054162,0.146323242448555,0.111198636243301,0.110009170471969],[0.566611083393023,0.542538715047883,0.286999841782606,0.591321313298125,1.33174932247201,1.88948856300832,0.983640209313105,0.649814886381155,0.589478665698041,0.641001194945725,0.669539559489064,0.504281680913523,0.282287019186389,0.199731118961121,0.0763832478793201,0.0396622605811011,0.0678915314812043,0.0650077313758699,0.0343885666353841,0.0891408643711514,0.220406494879895,0.228771036515565,0.148281745863329,0.134039053794969,0.142792710247787,0.256759943043344,0.291062620361849,0.305158686632607,0.272304779605297,0.249102746128202,0.126763520290545,0.0790602903286765],[0.571968170955937,0.738271792074818,0.399341918056355,0.346815040551522,0.74102705443041,1.0502642067798,1.45078740429957,0.892556794411017,0.638507338675713,0.500352018119301,0.553978359419089,0.442626331104535,0.305615196545088,0.143515826984588,0.0397000444834425,0.08808677218314,0.068533419523258,0.0884607365528671,0.0478494903484485,0.0522818843096427,0.122641080361137,0.127161410714055,0.218703228222333,0.184110076097809,0.154669199596292,0.20042139809866,0.240825789351901,0.267848853093737,0.294808025459685,0.178991570270428,0.0658850930555269,0.175586708394363],[0.615103746542524,0.843998905040773,0.679835504471335,0.575844415192744,0.594011667717156,0.760333120368116,0.978110276115381,1.05804856745048,0.831149070618408,0.601504578834444,0.496477979479699,0.387177594168386,0.335166757975693,0.226403660260226,0.0604512934952366,0.101251821256057,0.0737019387664041,0.10112910393054,0.0814584718981171,0.0868077435384133,0.098309815060597,0.0920578189511708,0.147448119765797,0.218246506539709,0.201333882495972,0.240939147414412,0.215829191287207,0.234294860594507,0.323314583945961,0.282368485179702,0.100323290542451,0.20182910069996],[0.252356906638047,0.661220473226886,0.735772744181617,0.647855001488155,0.651722886712664,0.749796568754683,0.760639647333719,0.903524696285049,0.886768447671612,0.840629627885101,0.555007381518147,0.390440374839324,0.346855501901002,0.185230542877495,0.142773208799458,0.139668487348098,0.0302374898297432,0.0792283420731833,0.0881609198271077,0.0976632391241272,0.107861107694585,0.0907820992240997,0.114664868121113,0.186372454538381,0.214806874910915,0.336723265226677,0.241273126427534,0.236269284615839,0.334589990259782,0.231017765972578,0.236942458629023,0.278406500227808],[0.184332695175082,0.255610941307229,0.470160748854625,0.754416890879989,0.855352720562715,0.893862163145982,0.65346913486158,0.716863387248277,0.921596996618613,1.30469827655513,0.590901315151043,0.454205579316316,0.322156337586456,0.140156453317442,0.138092276956091,0.107191391881749,0.022086805825529,0.0306276528261528,0.0563350632561541,0.113727295527624,0.141562148254197,0.108224933227104,0.0985091329813978,0.147869327312786,0.223243588888088,0.522610968307805,0.256876957792267,0.274855865861085,0.310764238319462,0.174801791481276,0.229174113930684,0.213668672404017],[0.263008708574568,0.269389296661626,0.282797199563845,0.447929089247909,0.637245989207938,0.90781990251658,0.703483581515017,0.575319634140945,0.591625466433364,0.574548505169887,0.58702046379762,0.690320517849616,0.2904977435969,0.1663039398944,0.121426584946286,0.249862556579335,0.031513792337231,0.0322785942222905,0.0338850024484254,0.0675246863162032,0.105465159611932,0.109914875450486,0.106048708324031,0.11867271896367,0.143312741782763,0.230141601335937,0.255189871871572,0.417737368926266,0.280225156204433,0.207412687292351,0.201516193563398,0.49806052342968],[0.18451574571596,0.162537087922162,0.264050609830735,0.248089432113409,0.470895548904765,0.710068329471902,0.583716413409956,0.465932403854675,0.432221449090114,0.458635534712753,0.716892893232192,0.822715471944113,0.460117706600362,0.229964765649232,0.0863535092168374,0.148874244892847,0.0221087390031934,0.0194754163291877,0.0316387700246752,0.037399136345332,0.0779339141663609,0.0859719772378677,0.0879940531609134,0.0961091225424214,0.104699416169233,0.18371141067915,0.311648088698719,0.497854239789139,0.44384701446572,0.286809861847831,0.14330988955933,0.296756686362435],[0.189881112143004,0.313251033355759,0.190389842634929,0.194902072322324,0.35892992402453,0.554122818639556,0.561859568087253,0.562291880956142,0.535289047945477,0.453492481473076,0.420566264229387,0.641441600350149,0.411322635990925,0.291503044055061,0.129595210558551,0.216132902342174,0.0227516190215448,0.0375341675437993,0.0228126738659002,0.0293812159376392,0.059403436612911,0.067090774751908,0.0846991785178989,0.115985449486527,0.129666056415426,0.18165130522646,0.182828807002551,0.388159006608721,0.396777436181801,0.363559815598793,0.215072618136783,0.43082592263775],[0.14804586608548,0.247129231079792,0.218200219077489,0.302708261458483,0.300765302035252,0.540094508686237,0.363464109950455,0.52323069987383,0.393786904397281,0.271784954077317,0.331667645160452,0.44162980523007,0.401561431778428,0.372722440723846,0.222920255403618,0.0666407226514477,0.0177389057019781,0.0296113626983146,0.0261449369692872,0.0456328487944986,0.0497771051086649,0.0653922881500772,0.0547914697587958,0.10792819524056,0.09538920169806,0.108866395069417,0.144182748459722,0.267245820029962,0.387361407880439,0.464855872288929,0.36995227492389,0.132837483374479],[0.113615354701777,0.0895427893357655,0.216552540703314,0.315891881479201,0.245635218771599,0.295367220512211,0.143778145369453,0.199781615444434,0.434045780498649,0.382932168211826,0.346301600392593,0.237146770848173,0.255292466916797,0.318778982834963,0.253139652017305,0.187121686404227,0.0136134301932344,0.0107291395698311,0.0259475107365336,0.0476202611501143,0.0406529942797414,0.0357617751767267,0.0216742607820617,0.0412094879034444,0.105141334157743,0.153387610623499,0.1505444298507,0.143505901305192,0.246264809267655,0.397578106231916,0.420103547646141,0.372996764106757],[0.00925153323877868,0.140396453989241,0.0885090865115479,0.186851393843966,0.135010031832788,0.102346356191365,0.212884149347824,0.223297321053031,0.283346592661667,0.198354983829497,0.475524221807349,0.272827122495086,0.284119263531192,0.0635931873801135,0.12486906773695,0.280410313494403,0.00110852183894588,0.0168224952688431,0.0106052344852679,0.0281675873702325,0.0223443612005391,0.0123916505491897,0.0320918492687167,0.0460601353649871,0.068636628024059,0.0794532284058181,0.2067201617637,0.165097344459417,0.274072232086578,0.0793128166198035,0.207229242552537,0.558952527445859]],"p.quarantine.s.interv":0,"p.quarantine.e.interv":0.1,"quarantine.dur.interv":14,"rr.isolate.interv":0.1,"time.to.detect.interv":[35.1175198498106,35.1175198498106,35.1175198498106,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206,35.1175198498106,35.1175198498106,35.1175198498106,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206],"rr.contact.interv":[[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]],"threshold":2,"interv.on":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"interv.fixed":true,"interv.duration":56,"population":[650332,682299,703567,748657,888276,936968,877531,800775,736630,671913,691037,665423,477320,346498,242304,363103,77923,81754,84302,112859,147011,113444,132286,165178,178438,269142,300408,402671,460441,432149,402121,723787],"mild":[4.5,1.8,4.5,5.4,8.1,6.3,7.2,9,10.8,14.4,16.2,18,13.5,12.6,21.6,15.3,19.8,19.8,19.8,17.1,21.6,28.8,27,27,24.3,26.1,33.3,23.4,30.6,37.8,35.1,36.9],"severe":[0.5,0.2,0.5,0.6,0.9,0.7,0.8,1,1.2,1.6,1.8,2,1.5,1.4,2.4,1.7,2.2,2.2,2.2,1.9,2.4,3.2,3,3,2.7,2.9,3.7,2.6,3.4,4.2,3.9,4.1],"data":[[0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,2,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,9,0,0,0,2,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,10,0,0,0,2,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,9,0,0,0,4,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,17,0,0,0,5,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,29,0,0,0,10,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,43,0,0,0,13,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,63,0,0,0,15,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,72,0,0,0,17,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,92,0,0,0,20,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,99,0,0,0,29,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,125,0,0,0,39,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,143,0,0,0,46,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,167,0,0,0,52,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,194,0,0,0,63,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,196,0,0,0,76,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,200,0,0,0,83,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,216,0,0,0,98,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,233,0,0,0,107,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,246,0,0,0,113,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,264,0,0,0,126,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,260,0,0,0,145,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,257,0,0,0,153,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,261,0,0,0,163,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,263,0,0,0,173,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,255,0,0,0,189,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,254,0,0,0,197,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,248,0,0,0,213,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,245,0,0,0,224,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,250,0,0,0,239,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,247,0,0,0,247,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,247,0,0,0,263,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,250,0,0,0,272,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,243,0,0,0,282,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,233,0,0,0,291,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,243,0,0,0,303,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,245,0,0,0,307,0,0,0,0]],"data_start":13,"interv.start":21,"interv.strength":0.29732377315776015,"days":60,"steps":2,"integrator":1,"cost_icu":1,"cost_fat":1,"cost_hosp":0,"gd_step":1,"data.start":13};
+          scenarios[1].params["interv.on"] = [...[...Array(21)].map(x=>0),...[...Array(200)].map(x=>1)];
+
+
+          for (var i in params) if (params[i] instanceof Array && params[i].length==1) params[i] = params[i][0];
+          Object.assign(params,{
+            // Population and distribution of initial infection.
+              "population" : scenario.y.slice(0,32),
+              "mild" : scenario.y.slice(32*6,32*7),
+              "severe" : scenario.y.slice(32*7,32*8),
+        
+            // Actual data 
+              "max_icu":2800,
+
+            // Simulation params.  
+              "days"       : 180,
+              "steps"      : 1,
+              "integrator" : 1
+          });
+          params = {"R0":3.085797135648312,"latent.period":2.7941356887197566,"inf.period.presymp":2.2080105746445824,"inf.period.mild":3.63284659083289,"inf.period.severe":3.6807573686927118,"p.severe":[0.01105917873099,0.01105917873099,0.01105917873099,0.0270580925139558,0.0270580925139558,0.0270580925139558,0.0270580925139558,0.0270580925139558,0.0270580925139558,0.0270580925139558,0.117957714542174,0.117957714542174,0.117957714542174,0.117957714542174,0.353784903790709,0.353784903790709,0.0236720096464102,0.0236720096464102,0.0236720096464102,0.0579174496211877,0.0579174496211877,0.0579174496211877,0.0579174496211877,0.0579174496211877,0.0579174496211877,0.0579174496211877,0.252486755520668,0.252486755520668,0.252486755520668,0.252486755520668,0.757271390489436,0.757271390489436],"p.icu":[0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27,0.27],"hosp.dur":10,"icu.a.dur":2.990958684526254,"icu.b.dur":9.202036771325577,"icu.c.dur":21,"cfr.icu":[0,0,0,0.13241656472398533,0.13241656472398533,0.13241656472398533,0.13241656472398533,0.13241656472398533,0.13241656472398533,0.13241656472398533,0.2673923625880995,0.238497821526764,0.238497821526764,0.238497821526764,0.3872449455755827,0.3986020976775571,0,0,0,0.35090389651856135,0.35090389651856135,0.35090389651856135,0.35090389651856135,0.35090389651856135,0.35090389651856135,0.35090389651856135,0.6031897195614541,0.6031897195614541,0.6031897195614541,0.6031897195614541,0.6666666666666666,0.6666666666666666],"p.quarantine.s":0,"p.quarantine.e":0.1,"quarantine.dur":14,"rr.isolate":0.1,"time.to.detect":[35.1175198498106,35.1175198498106,35.1175198498106,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206,35.1175198498106,35.1175198498106,35.1175198498106,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206],"rr.contact":1,"init.infected":665,"p.ltc":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0.07,0.07],"ltc.dur":17,"beta":0.0472644491704166,"cm":[[1.49203695156884,0.639952716564911,0.357613932947617,0.234328955613932,0.456280116361116,0.816346809913389,0.771790102635475,0.757397302666314,0.285844258220085,0.190449699865876,0.279470714876777,0.188797446629647,0.139365819993632,0.0788790902291239,0.0423313859777149,0.00516545314331796,0.17877637172567,0.076680010362096,0.0428496074650318,0.0353247636790048,0.075515038328587,0.0988397122461114,0.116345776408168,0.156230366407313,0.0692416515052002,0.0762866816407802,0.1214916690636,0.114248014618981,0.134437562900544,0.0983772488251755,0.070251994439814,0.0102964939266343],[0.609969720121372,5.26288873719407,0.944506324830457,0.453191145260337,0.457878291145037,0.745042004694401,0.949519761821734,0.990552856129093,0.713873004640372,0.251720014841828,0.272839285118636,0.15851689165077,0.219142902512492,0.125501846420244,0.0317992200299477,0.0747155918927849,0.0730867779857329,0.630606531477496,0.113171556079033,0.0683179339309409,0.0757795386338515,0.0902064373388969,0.14313815832415,0.204323985725942,0.172925445884662,0.100829167220398,0.11860885012513,0.0959241794736689,0.211393566529277,0.156524705564424,0.0527731038598728,0.148933426904496],[0.330555276529015,0.915955013418048,5.21234470794853,1.01916285819895,0.231646947072857,0.382209040155899,0.498083214098887,0.773764653676243,0.770349201350411,0.449007868824373,0.277760793776572,0.249735062823295,0.129165921207937,0.107460894996371,0.074579317709011,0.0456785421141165,0.0396072449348494,0.109750983318133,0.624547603241023,0.153637381355515,0.0383379144951882,0.0462762040447974,0.0750850238456367,0.159606503655752,0.186605990511606,0.17985494525501,0.120748331184629,0.151123522153756,0.124598353152819,0.134024203059719,0.123769767797747,0.0910527727976635],[0.203553320629233,0.413022071816577,0.957780872488287,5.25082240624134,1.17025191167949,0.740057393810941,0.406515866879248,0.615932011022363,0.637447362071309,0.677082450844441,0.413454457844657,0.220507407511318,0.124263390525824,0.140101284271491,0.102238897719431,0.0906240129444131,0.0243898276624735,0.0494888699225595,0.114762123738759,0.791554164251442,0.193678433040985,0.0896029223874118,0.0612814338934901,0.127049942514004,0.154412435541968,0.271212679298026,0.179737158462134,0.133436833848529,0.11986918586504,0.17473298517348,0.169672839861643,0.180644286764356],[0.334055587039791,0.351703637349166,0.183478049177518,0.986312008252204,2.43923167568905,1.40475088731201,0.732063246222314,0.535497630484451,0.540461106727132,0.647009051839131,0.49574744408752,0.352756045236903,0.192872971165931,0.117322291297537,0.0670043950857994,0.055188418451676,0.0400266533230744,0.0421416111819653,0.0219844968592374,0.148685161481607,0.403696472576904,0.170081112332783,0.110357034212769,0.110458527811383,0.130918913107226,0.259166454928075,0.215511612523561,0.213465163499893,0.186052593054162,0.146323242448555,0.111198636243301,0.110009170471969],[0.566611083393023,0.542538715047883,0.286999841782606,0.591321313298125,1.33174932247201,1.88948856300832,0.983640209313105,0.649814886381155,0.589478665698041,0.641001194945725,0.669539559489064,0.504281680913523,0.282287019186389,0.199731118961121,0.0763832478793201,0.0396622605811011,0.0678915314812043,0.0650077313758699,0.0343885666353841,0.0891408643711514,0.220406494879895,0.228771036515565,0.148281745863329,0.134039053794969,0.142792710247787,0.256759943043344,0.291062620361849,0.305158686632607,0.272304779605297,0.249102746128202,0.126763520290545,0.0790602903286765],[0.571968170955937,0.738271792074818,0.399341918056355,0.346815040551522,0.74102705443041,1.0502642067798,1.45078740429957,0.892556794411017,0.638507338675713,0.500352018119301,0.553978359419089,0.442626331104535,0.305615196545088,0.143515826984588,0.0397000444834425,0.08808677218314,0.068533419523258,0.0884607365528671,0.0478494903484485,0.0522818843096427,0.122641080361137,0.127161410714055,0.218703228222333,0.184110076097809,0.154669199596292,0.20042139809866,0.240825789351901,0.267848853093737,0.294808025459685,0.178991570270428,0.0658850930555269,0.175586708394363],[0.615103746542524,0.843998905040773,0.679835504471335,0.575844415192744,0.594011667717156,0.760333120368116,0.978110276115381,1.05804856745048,0.831149070618408,0.601504578834444,0.496477979479699,0.387177594168386,0.335166757975693,0.226403660260226,0.0604512934952366,0.101251821256057,0.0737019387664041,0.10112910393054,0.0814584718981171,0.0868077435384133,0.098309815060597,0.0920578189511708,0.147448119765797,0.218246506539709,0.201333882495972,0.240939147414412,0.215829191287207,0.234294860594507,0.323314583945961,0.282368485179702,0.100323290542451,0.20182910069996],[0.252356906638047,0.661220473226886,0.735772744181617,0.647855001488155,0.651722886712664,0.749796568754683,0.760639647333719,0.903524696285049,0.886768447671612,0.840629627885101,0.555007381518147,0.390440374839324,0.346855501901002,0.185230542877495,0.142773208799458,0.139668487348098,0.0302374898297432,0.0792283420731833,0.0881609198271077,0.0976632391241272,0.107861107694585,0.0907820992240997,0.114664868121113,0.186372454538381,0.214806874910915,0.336723265226677,0.241273126427534,0.236269284615839,0.334589990259782,0.231017765972578,0.236942458629023,0.278406500227808],[0.184332695175082,0.255610941307229,0.470160748854625,0.754416890879989,0.855352720562715,0.893862163145982,0.65346913486158,0.716863387248277,0.921596996618613,1.30469827655513,0.590901315151043,0.454205579316316,0.322156337586456,0.140156453317442,0.138092276956091,0.107191391881749,0.022086805825529,0.0306276528261528,0.0563350632561541,0.113727295527624,0.141562148254197,0.108224933227104,0.0985091329813978,0.147869327312786,0.223243588888088,0.522610968307805,0.256876957792267,0.274855865861085,0.310764238319462,0.174801791481276,0.229174113930684,0.213668672404017],[0.263008708574568,0.269389296661626,0.282797199563845,0.447929089247909,0.637245989207938,0.90781990251658,0.703483581515017,0.575319634140945,0.591625466433364,0.574548505169887,0.58702046379762,0.690320517849616,0.2904977435969,0.1663039398944,0.121426584946286,0.249862556579335,0.031513792337231,0.0322785942222905,0.0338850024484254,0.0675246863162032,0.105465159611932,0.109914875450486,0.106048708324031,0.11867271896367,0.143312741782763,0.230141601335937,0.255189871871572,0.417737368926266,0.280225156204433,0.207412687292351,0.201516193563398,0.49806052342968],[0.18451574571596,0.162537087922162,0.264050609830735,0.248089432113409,0.470895548904765,0.710068329471902,0.583716413409956,0.465932403854675,0.432221449090114,0.458635534712753,0.716892893232192,0.822715471944113,0.460117706600362,0.229964765649232,0.0863535092168374,0.148874244892847,0.0221087390031934,0.0194754163291877,0.0316387700246752,0.037399136345332,0.0779339141663609,0.0859719772378677,0.0879940531609134,0.0961091225424214,0.104699416169233,0.18371141067915,0.311648088698719,0.497854239789139,0.44384701446572,0.286809861847831,0.14330988955933,0.296756686362435],[0.189881112143004,0.313251033355759,0.190389842634929,0.194902072322324,0.35892992402453,0.554122818639556,0.561859568087253,0.562291880956142,0.535289047945477,0.453492481473076,0.420566264229387,0.641441600350149,0.411322635990925,0.291503044055061,0.129595210558551,0.216132902342174,0.0227516190215448,0.0375341675437993,0.0228126738659002,0.0293812159376392,0.059403436612911,0.067090774751908,0.0846991785178989,0.115985449486527,0.129666056415426,0.18165130522646,0.182828807002551,0.388159006608721,0.396777436181801,0.363559815598793,0.215072618136783,0.43082592263775],[0.14804586608548,0.247129231079792,0.218200219077489,0.302708261458483,0.300765302035252,0.540094508686237,0.363464109950455,0.52323069987383,0.393786904397281,0.271784954077317,0.331667645160452,0.44162980523007,0.401561431778428,0.372722440723846,0.222920255403618,0.0666407226514477,0.0177389057019781,0.0296113626983146,0.0261449369692872,0.0456328487944986,0.0497771051086649,0.0653922881500772,0.0547914697587958,0.10792819524056,0.09538920169806,0.108866395069417,0.144182748459722,0.267245820029962,0.387361407880439,0.464855872288929,0.36995227492389,0.132837483374479],[0.113615354701777,0.0895427893357655,0.216552540703314,0.315891881479201,0.245635218771599,0.295367220512211,0.143778145369453,0.199781615444434,0.434045780498649,0.382932168211826,0.346301600392593,0.237146770848173,0.255292466916797,0.318778982834963,0.253139652017305,0.187121686404227,0.0136134301932344,0.0107291395698311,0.0259475107365336,0.0476202611501143,0.0406529942797414,0.0357617751767267,0.0216742607820617,0.0412094879034444,0.105141334157743,0.153387610623499,0.1505444298507,0.143505901305192,0.246264809267655,0.397578106231916,0.420103547646141,0.372996764106757],[0.00925153323877868,0.140396453989241,0.0885090865115479,0.186851393843966,0.135010031832788,0.102346356191365,0.212884149347824,0.223297321053031,0.283346592661667,0.198354983829497,0.475524221807349,0.272827122495086,0.284119263531192,0.0635931873801135,0.12486906773695,0.280410313494403,0.00110852183894588,0.0168224952688431,0.0106052344852679,0.0281675873702325,0.0223443612005391,0.0123916505491897,0.0320918492687167,0.0460601353649871,0.068636628024059,0.0794532284058181,0.2067201617637,0.165097344459417,0.274072232086578,0.0793128166198035,0.207229242552537,0.558952527445859],[1.49203695156884,0.639952716564911,0.357613932947617,0.234328955613932,0.456280116361116,0.816346809913389,0.771790102635475,0.757397302666314,0.285844258220085,0.190449699865876,0.279470714876777,0.188797446629647,0.139365819993632,0.0788790902291239,0.0423313859777149,0.00516545314331796,0.17877637172567,0.076680010362096,0.0428496074650318,0.0353247636790048,0.075515038328587,0.0988397122461114,0.116345776408168,0.156230366407313,0.0692416515052002,0.0762866816407802,0.1214916690636,0.114248014618981,0.134437562900544,0.0983772488251755,0.070251994439814,0.0102964939266343],[0.609969720121372,5.26288873719407,0.944506324830457,0.453191145260337,0.457878291145037,0.745042004694401,0.949519761821734,0.990552856129093,0.713873004640372,0.251720014841828,0.272839285118636,0.15851689165077,0.219142902512492,0.125501846420244,0.0317992200299477,0.0747155918927849,0.0730867779857329,0.630606531477496,0.113171556079033,0.0683179339309409,0.0757795386338515,0.0902064373388969,0.14313815832415,0.204323985725942,0.172925445884662,0.100829167220398,0.11860885012513,0.0959241794736689,0.211393566529277,0.156524705564424,0.0527731038598728,0.148933426904496],[0.330555276529015,0.915955013418048,5.21234470794853,1.01916285819895,0.231646947072857,0.382209040155899,0.498083214098887,0.773764653676243,0.770349201350411,0.449007868824373,0.277760793776572,0.249735062823295,0.129165921207937,0.107460894996371,0.074579317709011,0.0456785421141165,0.0396072449348494,0.109750983318133,0.624547603241023,0.153637381355515,0.0383379144951882,0.0462762040447974,0.0750850238456367,0.159606503655752,0.186605990511606,0.17985494525501,0.120748331184629,0.151123522153756,0.124598353152819,0.134024203059719,0.123769767797747,0.0910527727976635],[0.203553320629233,0.413022071816577,0.957780872488287,5.25082240624134,1.17025191167949,0.740057393810941,0.406515866879248,0.615932011022363,0.637447362071309,0.677082450844441,0.413454457844657,0.220507407511318,0.124263390525824,0.140101284271491,0.102238897719431,0.0906240129444131,0.0243898276624735,0.0494888699225595,0.114762123738759,0.791554164251442,0.193678433040985,0.0896029223874118,0.0612814338934901,0.127049942514004,0.154412435541968,0.271212679298026,0.179737158462134,0.133436833848529,0.11986918586504,0.17473298517348,0.169672839861643,0.180644286764356],[0.334055587039791,0.351703637349166,0.183478049177518,0.986312008252204,2.43923167568905,1.40475088731201,0.732063246222314,0.535497630484451,0.540461106727132,0.647009051839131,0.49574744408752,0.352756045236903,0.192872971165931,0.117322291297537,0.0670043950857994,0.055188418451676,0.0400266533230744,0.0421416111819653,0.0219844968592374,0.148685161481607,0.403696472576904,0.170081112332783,0.110357034212769,0.110458527811383,0.130918913107226,0.259166454928075,0.215511612523561,0.213465163499893,0.186052593054162,0.146323242448555,0.111198636243301,0.110009170471969],[0.566611083393023,0.542538715047883,0.286999841782606,0.591321313298125,1.33174932247201,1.88948856300832,0.983640209313105,0.649814886381155,0.589478665698041,0.641001194945725,0.669539559489064,0.504281680913523,0.282287019186389,0.199731118961121,0.0763832478793201,0.0396622605811011,0.0678915314812043,0.0650077313758699,0.0343885666353841,0.0891408643711514,0.220406494879895,0.228771036515565,0.148281745863329,0.134039053794969,0.142792710247787,0.256759943043344,0.291062620361849,0.305158686632607,0.272304779605297,0.249102746128202,0.126763520290545,0.0790602903286765],[0.571968170955937,0.738271792074818,0.399341918056355,0.346815040551522,0.74102705443041,1.0502642067798,1.45078740429957,0.892556794411017,0.638507338675713,0.500352018119301,0.553978359419089,0.442626331104535,0.305615196545088,0.143515826984588,0.0397000444834425,0.08808677218314,0.068533419523258,0.0884607365528671,0.0478494903484485,0.0522818843096427,0.122641080361137,0.127161410714055,0.218703228222333,0.184110076097809,0.154669199596292,0.20042139809866,0.240825789351901,0.267848853093737,0.294808025459685,0.178991570270428,0.0658850930555269,0.175586708394363],[0.615103746542524,0.843998905040773,0.679835504471335,0.575844415192744,0.594011667717156,0.760333120368116,0.978110276115381,1.05804856745048,0.831149070618408,0.601504578834444,0.496477979479699,0.387177594168386,0.335166757975693,0.226403660260226,0.0604512934952366,0.101251821256057,0.0737019387664041,0.10112910393054,0.0814584718981171,0.0868077435384133,0.098309815060597,0.0920578189511708,0.147448119765797,0.218246506539709,0.201333882495972,0.240939147414412,0.215829191287207,0.234294860594507,0.323314583945961,0.282368485179702,0.100323290542451,0.20182910069996],[0.252356906638047,0.661220473226886,0.735772744181617,0.647855001488155,0.651722886712664,0.749796568754683,0.760639647333719,0.903524696285049,0.886768447671612,0.840629627885101,0.555007381518147,0.390440374839324,0.346855501901002,0.185230542877495,0.142773208799458,0.139668487348098,0.0302374898297432,0.0792283420731833,0.0881609198271077,0.0976632391241272,0.107861107694585,0.0907820992240997,0.114664868121113,0.186372454538381,0.214806874910915,0.336723265226677,0.241273126427534,0.236269284615839,0.334589990259782,0.231017765972578,0.236942458629023,0.278406500227808],[0.184332695175082,0.255610941307229,0.470160748854625,0.754416890879989,0.855352720562715,0.893862163145982,0.65346913486158,0.716863387248277,0.921596996618613,1.30469827655513,0.590901315151043,0.454205579316316,0.322156337586456,0.140156453317442,0.138092276956091,0.107191391881749,0.022086805825529,0.0306276528261528,0.0563350632561541,0.113727295527624,0.141562148254197,0.108224933227104,0.0985091329813978,0.147869327312786,0.223243588888088,0.522610968307805,0.256876957792267,0.274855865861085,0.310764238319462,0.174801791481276,0.229174113930684,0.213668672404017],[0.263008708574568,0.269389296661626,0.282797199563845,0.447929089247909,0.637245989207938,0.90781990251658,0.703483581515017,0.575319634140945,0.591625466433364,0.574548505169887,0.58702046379762,0.690320517849616,0.2904977435969,0.1663039398944,0.121426584946286,0.249862556579335,0.031513792337231,0.0322785942222905,0.0338850024484254,0.0675246863162032,0.105465159611932,0.109914875450486,0.106048708324031,0.11867271896367,0.143312741782763,0.230141601335937,0.255189871871572,0.417737368926266,0.280225156204433,0.207412687292351,0.201516193563398,0.49806052342968],[0.18451574571596,0.162537087922162,0.264050609830735,0.248089432113409,0.470895548904765,0.710068329471902,0.583716413409956,0.465932403854675,0.432221449090114,0.458635534712753,0.716892893232192,0.822715471944113,0.460117706600362,0.229964765649232,0.0863535092168374,0.148874244892847,0.0221087390031934,0.0194754163291877,0.0316387700246752,0.037399136345332,0.0779339141663609,0.0859719772378677,0.0879940531609134,0.0961091225424214,0.104699416169233,0.18371141067915,0.311648088698719,0.497854239789139,0.44384701446572,0.286809861847831,0.14330988955933,0.296756686362435],[0.189881112143004,0.313251033355759,0.190389842634929,0.194902072322324,0.35892992402453,0.554122818639556,0.561859568087253,0.562291880956142,0.535289047945477,0.453492481473076,0.420566264229387,0.641441600350149,0.411322635990925,0.291503044055061,0.129595210558551,0.216132902342174,0.0227516190215448,0.0375341675437993,0.0228126738659002,0.0293812159376392,0.059403436612911,0.067090774751908,0.0846991785178989,0.115985449486527,0.129666056415426,0.18165130522646,0.182828807002551,0.388159006608721,0.396777436181801,0.363559815598793,0.215072618136783,0.43082592263775],[0.14804586608548,0.247129231079792,0.218200219077489,0.302708261458483,0.300765302035252,0.540094508686237,0.363464109950455,0.52323069987383,0.393786904397281,0.271784954077317,0.331667645160452,0.44162980523007,0.401561431778428,0.372722440723846,0.222920255403618,0.0666407226514477,0.0177389057019781,0.0296113626983146,0.0261449369692872,0.0456328487944986,0.0497771051086649,0.0653922881500772,0.0547914697587958,0.10792819524056,0.09538920169806,0.108866395069417,0.144182748459722,0.267245820029962,0.387361407880439,0.464855872288929,0.36995227492389,0.132837483374479],[0.113615354701777,0.0895427893357655,0.216552540703314,0.315891881479201,0.245635218771599,0.295367220512211,0.143778145369453,0.199781615444434,0.434045780498649,0.382932168211826,0.346301600392593,0.237146770848173,0.255292466916797,0.318778982834963,0.253139652017305,0.187121686404227,0.0136134301932344,0.0107291395698311,0.0259475107365336,0.0476202611501143,0.0406529942797414,0.0357617751767267,0.0216742607820617,0.0412094879034444,0.105141334157743,0.153387610623499,0.1505444298507,0.143505901305192,0.246264809267655,0.397578106231916,0.420103547646141,0.372996764106757],[0.00925153323877868,0.140396453989241,0.0885090865115479,0.186851393843966,0.135010031832788,0.102346356191365,0.212884149347824,0.223297321053031,0.283346592661667,0.198354983829497,0.475524221807349,0.272827122495086,0.284119263531192,0.0635931873801135,0.12486906773695,0.280410313494403,0.00110852183894588,0.0168224952688431,0.0106052344852679,0.0281675873702325,0.0223443612005391,0.0123916505491897,0.0320918492687167,0.0460601353649871,0.068636628024059,0.0794532284058181,0.2067201617637,0.165097344459417,0.274072232086578,0.0793128166198035,0.207229242552537,0.558952527445859]],"p.quarantine.s.interv":0,"p.quarantine.e.interv":0.1,"quarantine.dur.interv":14,"rr.isolate.interv":0.1,"time.to.detect.interv":[35.1175198498106,35.1175198498106,35.1175198498106,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206,35.1175198498106,35.1175198498106,35.1175198498106,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,21.2212682563352,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206,8.00804337232206],"rr.contact.interv":[[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]],"threshold":2,"interv.on":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"interv.fixed":true,"interv.duration":56,"population":[650332,682299,703567,748657,888276,936968,877531,800775,736630,671913,691037,665423,477320,346498,242304,363103,77923,81754,84302,112859,147011,113444,132286,165178,178438,269142,300408,402671,460441,432149,402121,723787],"mild":[4.5,1.8,4.5,5.4,8.1,6.3,7.2,9,10.8,14.4,16.2,18,13.5,12.6,21.6,15.3,19.8,19.8,19.8,17.1,21.6,28.8,27,27,24.3,26.1,33.3,23.4,30.6,37.8,35.1,36.9],"severe":[0.5,0.2,0.5,0.6,0.9,0.7,0.8,1,1.2,1.6,1.8,2,1.5,1.4,2.4,1.7,2.2,2.2,2.2,1.9,2.4,3.2,3,3,2.7,2.9,3.7,2.6,3.4,4.2,3.9,4.1],"data":[[0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,2,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,9,0,0,0,2,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,10,0,0,0,2,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,9,0,0,0,4,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,17,0,0,0,5,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,29,0,0,0,10,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,43,0,0,0,13,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,63,0,0,0,15,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,72,0,0,0,17,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,92,0,0,0,20,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,99,0,0,0,29,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,125,0,0,0,39,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,143,0,0,0,46,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,167,0,0,0,52,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,194,0,0,0,63,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,196,0,0,0,76,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,200,0,0,0,83,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,216,0,0,0,98,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,233,0,0,0,107,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,246,0,0,0,113,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,264,0,0,0,126,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,260,0,0,0,145,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,257,0,0,0,153,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,261,0,0,0,163,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,263,0,0,0,173,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,255,0,0,0,189,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,254,0,0,0,197,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,248,0,0,0,213,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,245,0,0,0,224,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,250,0,0,0,239,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,247,0,0,0,247,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,247,0,0,0,263,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,250,0,0,0,272,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,243,0,0,0,282,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,233,0,0,0,291,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,243,0,0,0,303,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,245,0,0,0,307,0,0,0,0]],"data_start":13,"interv.start":21,"interv.strength":0.29732377315776015,"days":60,"steps":"2","integrator":1,"cost_icu":1,"cost_fat":1,"cost_hosp":0,"gd_step":1,"data.start":13};
+          params.data=[...Array(ontario.ICUB.length)].map((x,i)=>[0,0,0,0,0,ontario.ICUB[i],0,ontario.DEATHS[i],0]);
+          params.days=30*6;
+          params.steps = 1;
+          params["max_icu"] = 2800;
+          scenario.params=params;
+          
+          
+          params.intervention_list = [
+            { 
+              strength : params["interv.strength"],
+              duration : 180, //params["interv.duration"],
+              testing  : .1, //params["time.to.detect.interv"][0] / params["time.to.detect"][0],
+              enabled  : true, tp : 0,
+            },
+            { strength : 1, duration : 180, testing : .7, enabled : false, tp:0 },
+            { strength : 1, duration : 180, testing : .7, enabled : false, tp:0 },
+            { strength : 1, duration : 180, testing : .7, enabled : false, tp:0 },
+            { strength : 1, duration : 180, testing : .7, enabled : false, tp:0 },
+          ];
+          
+          
+        });
+        
+        
+        function recalc(scenario) {
+          var res = API.calc(scenario.params);
+
+         // simpler view..
+          res = res.map( day=>[
+           // 0      1             2                     3                             4                        5        6        7        8
+           day[0], day[2]+day[3], day[4]+day[6]+day[7], day[5]+day[8]+day[9]+day[10], day[11]+day[12]+day[14], day[13], day[15], day[16], day[20]
+         ])
+
+          self.results=res;
+          self.params=scenario.params;
+          updateGraph(res,scenario.params);
+        }
+        recalc(scenarios[1]);  
+        
+        window.setStrength = function(intervention, value) {
+          params.intervention_list[intervention].strength = value*1;
+        
+          if (intervention == 0) {
+            params["interv.strength"] = value;
+          }
+          recalc(scenarios[1])
+        }
+
+        window.setDuration = function(intervention, value) {
+          params.intervention_list[intervention].duration = value*1;
+          if (intervention == 0) {
+            params["interv.duration"] = value;
+            params["interv.on"] = [...Array(21)].map(x=>0).concat([...Array(value*1)].map(x=>1)).concat([...Array(200)].map(x=>0))
+          }  
+          recalc(scenarios[1])
+        }
+
+        window.setDetection = function(intervention, value) {
+          params.intervention_list[intervention].testing = value*1;
+          recalc(scenarios[1])
+        }
+        
+        window.setType = function(intervention, value, el) {
+          console.log(el);
+          params.intervention_list[intervention].enabled = value!=0;
+          var els = [...el.querySelectorAll('article')].slice(1);
+          console.log(els);
+          els.forEach(el=>el.style.display='none');
+          if (value) els[value-1].style.display='';
+          params.intervention_list[intervention].tp = value;
+          recalc(scenarios[1])
+        }
+        
+      });
+    })
+  </SCRIPT>
+  
+  <SECTION CLASS="intervention" STYLE="top:-50%">
+    <H3>Intervention Phase 1</H3>
+    <P>
+    The first phase, a full lockdown, is currently
+    in place, and only its duration needs to be
+    determined.
+    </P>
+    <LABEL>Duration : 180 days<INPUT TYPE="range" value=180 min=30 max=180 step=1 oninput="this.previousSibling.data='Duration : '+this.value+' days'" onchange="setDuration(0,this.value)"></input></LABEL>
+  </SECTION>  
+
+  <SECTION CLASS="intervention">
+    <HEADER><H3>Intervention Phase 2</H3></HEADER>
+    <LABEL> Intervention Type
+      <SELECT ONCHANGE="setType(1,this.selectedIndex,this.parentElement.parentElement)">
+        <OPTION>No Intervention</OPTION>
+        <!--OPTION>Selective lockdown</OPTION-->
+        <OPTION>Physical Distancing</OPTION>
+        <OPTION>Test and Trace</OPTION>
+      </SELECT>
+    </LABEL>
+    <ARTICLE>
+      <LABEL>Duration : 180 days</LABEL>
+      <INPUT TYPE="range" value=180 min=7 max=180 step=1 oninput="this.previousElementSibling.firstChild.data='Duration : '+this.value+' days'" onchange="setDuration(1,this.value)"></input>
+    </ARTICLE>
+    <ARTICLE STYLE="display:none">  
+    <LABEL>Contacts : 100%</LABEL>
+    <INPUT TYPE="range"  value=1 min=0.1 max=1 step=0.01 oninput="this.previousElementSibling.firstChild.data='Contacts :'+Math.round(this.value*100)+'%'" onchange="setStrength(1,this.value)"></input>
+    </ARTICLE>	
+    <ARTICLE STYLE="display:none; max-width:50%">  
+    <LABEL>Detected cases : 70%</LABEL>
+    <INPUT TYPE="range"  value=0.7 min=0.1 max=1 step=0.01 oninput="this.previousElementSibling.firstChild.data='Detected cases : '+Math.round(this.value*100)+'%'" onchange="setDetection(1,this.value)"></input>
+    </ARTICLE>	
+  </SECTION>  
+
+  <SECTION CLASS="intervention">
+    <HEADER><H3>Intervention Phase 3</H3></HEADER>
+    <LABEL> Intervention Type
+      <SELECT ONCHANGE="setType(2,this.selectedIndex,this.parentElement.parentElement)">
+        <OPTION>No Intervention</OPTION>
+        <!--OPTION>Selective lockdown</OPTION-->
+        <OPTION>Physical Distancing</OPTION>
+        <OPTION>Test and Trace</OPTION>
+      </SELECT>
+    </LABEL>
+    <ARTICLE>
+      <LABEL>Duration : 180 days</LABEL>
+      <INPUT TYPE="range" value=180 min=7 max=180 step=1 oninput="this.previousElementSibling.firstChild.data='Duration : '+this.value+' days'" onchange="setDuration(2,this.value)"></input>
+    </ARTICLE>
+    <ARTICLE STYLE="display:none">  
+    <LABEL>Contacts : 100%</LABEL>
+    <INPUT TYPE="range"  value=1 min=0.1 max=1 step=0.01 oninput="this.previousElementSibling.firstChild.data='Contacts :'+Math.round(this.value*100)+'%'" onchange="setStrength(2,this.value)"></input>
+    </ARTICLE>	
+    <ARTICLE STYLE="display:none; max-width:50%">  
+    <LABEL>Detected cases : 70%</LABEL>
+    <INPUT TYPE="range"  value=0.7 min=0.1 max=1 step=0.01 oninput="this.previousElementSibling.firstChild.data='Detected cases : '+Math.round(this.value*100)+'%'" onchange="setDetection(2,this.value)"></input>
+    </ARTICLE>	
+  </SECTION>  
+
+  <DIV STYLE="height:50vh"></DIV>
+  <!--SECTION CLASS="refs">
+  <HEADER><H2>References</H2></HEADER>
+  <OL>
+    <LI><a target="blank" href="https://www.medrxiv.org/content/10.1101/2020.03.24.20042705v1">Mathematical modeling of COVID-19 transmission and mitigation strategies in the population of Ontario, Canada</a></p>
+  </OL>
+  </SECTION-->  
+  
+</BODY>
